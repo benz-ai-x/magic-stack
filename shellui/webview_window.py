@@ -132,6 +132,32 @@ class _ConfigWindowDelegate(NSObject):
         except Exception:
             logger.exception("key-file picker failed")
 
+    # WKUIDelegate —— HTML <input type="file"> 的系统文件面板（M2 VPN
+    # 导入）。WKWebView 未设 UIDelegate 时点击 file input 静默无反应
+    # （真机坑：桥接式 SSH 密钥选择能用，因为走 showOpenPanelFill_ 原
+    # 生路径，不经 HTML input）。completionHandler 每条路径恰调一次。
+    def webView_runOpenPanelWithParameters_initiatedByFrame_completionHandler_(
+            self, _webview, parameters, _frame, completion):
+        try:
+            panel = NSOpenPanel.openPanel()
+            panel.setCanChooseFiles_(True)
+            panel.setCanChooseDirectories_(False)
+            try:
+                multiple = bool(parameters.allowsMultipleSelection())
+            except Exception:
+                multiple = False
+            panel.setAllowsMultipleSelection_(multiple)
+            if panel.runModal() == 1:
+                completion(panel.URLs(), None)
+            else:
+                completion(None, None)
+        except Exception:
+            logger.exception("web file picker failed")
+            try:
+                completion(None, None)
+            except Exception:
+                pass
+
 
 def show_config_window(url, title="Magic Stack 设置", on_action=None,
                        auth_headers=None, on_close=None):
@@ -197,6 +223,8 @@ def show_config_window(url, title="Magic Stack 设置", on_action=None,
     cv = win.contentView()
     _webview = WKWebView.alloc().initWithFrame_configuration_(cv.bounds(), config)
     _webview.setAutoresizingMask_(_WidthSizable | _HeightSizable)
+    # UIDelegate：<input type="file"> 需要 runOpenPanel 回调（见 delegate）
+    _webview.setUIDelegate_(_window_delegate)
     request = None
     if auth_headers:
         mutable = objc.lookUpClass("NSMutableURLRequest").requestWithURL_(
