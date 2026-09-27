@@ -532,30 +532,36 @@ class MagicProxyApp(rumps.App):
                 return
         self._intents.vpn_connect(server)
 
-    def switch_mode_ssh(self, _item):
-        """接入段「SSH 连接」：VPN 激活时原生确认 → 断 VPN → 恢复 SSH
-        会话与挂载（显式切换 = 主动恢复；被动断开仍不回切——ADR-011
-        语义不变）。SSH 已连接/连接中 = 无操作（单选语义）。SSH 空闲
-        （未连接且 VPN 未活跃）= 点击即连接——接入段就是连接入口。"""
-        client = self._vpn_client
+    def toggle_ssh(self, _item):
+        """接入段 SSH 行（行即开关，2026-09-27 定稿）：VPN 活跃 → 原生
+        确认切回 SSH（断 VPN + 恢复会话与挂载——显式切换 = 主动恢复，
+        被动断开仍不回切，ADR-011 语义不变）；连接中 → 取消；已连接 →
+        停止；空闲/失败 → 发起连接。"""
+        client = getattr(self, "_vpn_client", None)
         vpn_active = client is not None and client.vpn.status in (
             "connecting", "connected", "reconnecting")
-        if not vpn_active:
-            if self._conn.ssh.status in ("connected", "connecting"):
+        if vpn_active:
+            logger.info("ssh access row: vpn active, confirming switch")
+            # rumps.alert 第 3 个位置参数即 ok——标题/正文各占一个位置
+            # 参数，按钮文案只能走关键字（3 位置 + ok= 会 TypeError）
+            ok = rumps.alert(
+                i18n.t("mode.ssh_confirm_title"),
+                i18n.t("mode.ssh_confirm_body"),
+                ok=i18n.t("mode.switch_ok"))
+            if not ok:
                 return
+            self._intents.vpn_disconnect()
+            self._conn.start()
+            self._conn.apply_autostarts()
+            self._mounts.apply_autostarts()
+            return
+        s = self._conn.ssh.status
+        if s == "connecting":
+            self.cancel_connection(None)
+        elif s == "connected":
+            self.stop_proxy_tunnel(None)
+        else:
             self._intents.reconnect_proxy_or_forward()
-            return
-        logger.info("mode switch to ssh: confirming")
-        ok = rumps.alert(
-            i18n.t("mode.ssh_confirm_title"),
-            i18n.t("mode.ssh_confirm_body"),
-            ok=i18n.t("mode.switch_ok"))
-        if not ok:
-            return
-        self._intents.vpn_disconnect()
-        self._conn.start()
-        self._conn.apply_autostarts()
-        self._mounts.apply_autostarts()
 
     def _vpn_startup_reconcile(self):
         """启动期收养（spec §5.4 落地到生命周期）：残留 root openvpn

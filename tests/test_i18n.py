@@ -257,13 +257,13 @@ class TestI18nBehavior(unittest.TestCase):
 
     def test_default_is_zh_and_t_translates(self):
         i18n.set_language("zh-CN")
-        self.assertEqual(i18n.t("menu.group.proxy"), "代 理")
-        self.assertEqual(i18n.t("status.proxy.fw_count", n=3), "3 条转发")
+        self.assertEqual(i18n.t("menu.group.forward"), "端口映射")
+        self.assertEqual(i18n.t("status.traffic.connections", n=3), "3 连接")
 
     def test_english_lookup_and_fallback(self):
         i18n.set_language("en")
-        self.assertEqual(i18n.t("menu.group.proxy"), "Proxy")
-        self.assertEqual(i18n.t("status.proxy.fw_count", n=3), "3 forwards")
+        self.assertEqual(i18n.t("menu.group.forward"), "Port Forwards")
+        self.assertEqual(i18n.t("status.traffic.connections", n=3), "3 connections")
 
     def test_missing_key_returns_key_and_survives(self):
         i18n.set_language("en")
