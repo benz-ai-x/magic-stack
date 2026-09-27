@@ -353,6 +353,7 @@ class MagicProxyApp(rumps.App):
     def _vpn_connect_intent(self, index, force=False):
         """设置窗 HTTP 入口：同步校验（可拒）→ 意图层后台执行。
         返回 dict 直接作为端点响应（错误用结构化码，文案在 UI 侧映射）。"""
+        logger.info("vpn connect intent: index=%r force=%r", index, force)
         rows = servers(self._config)
         if (isinstance(index, bool) or not isinstance(index, int)
                 or not 0 <= index < len(rows)):

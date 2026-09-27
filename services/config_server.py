@@ -702,14 +702,32 @@ class _Handler(BaseHTTPRequestHandler):
         if fn is None:
             self._json(503, {"error": "vpn not available"})
             return
-        self._json(200, fn(data.get("index"), force=data.get("force") is True))
+        # windowed app 的 stderr 丢失（ThreadingMixIn handle_error 无处落）
+        # ——异常就地捕获：日志 + detail 回给 UI，真机定位不再靠猜
+        try:
+            result = fn(data.get("index"), force=data.get("force") is True)
+        except Exception:
+            logger.exception("vpn-connect handler failed")
+            import traceback
+            self._json(200, {"ok": False, "error": "exception",
+                             "detail": traceback.format_exc()[-600:]})
+            return
+        self._json(200, result)
 
     def _api_vpn_disconnect(self, data):
         fn = getattr(self.server, "vpn_disconnect_fn", None)
         if fn is None:
             self._json(503, {"error": "vpn not available"})
             return
-        self._json(200, fn())
+        try:
+            result = fn()
+        except Exception:
+            logger.exception("vpn-disconnect handler failed")
+            import traceback
+            self._json(200, {"ok": False, "error": "exception",
+                             "detail": traceback.format_exc()[-600:]})
+            return
+        self._json(200, result)
 
     # ── 隧道解析（index 路径单一归宿，test/test-forward/NFS 共用）──
 

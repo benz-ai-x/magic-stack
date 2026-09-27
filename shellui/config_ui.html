@@ -1821,7 +1821,7 @@ async function vpnToggle(btn){
       }
       if(d.error==='ssh_active'&&force){_arm(false);}
       if(d.error==='no_profile'){toast(tt('ui.vpn.profile_none'),true);_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.profile_none'),'var(--danger)');return;}
-      if(!d.ok){toast(tt('ui.vpn.action_failed'),true);_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.action_failed'),'var(--danger)');return;}
+      if(!d.ok){const detail=d.detail?String(d.detail).slice(0,400):'';toast(tt('ui.vpn.action_failed'),true);_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.action_failed')+(detail?'\n'+detail:''),'var(--danger)');return;}
     }
     _arm(false);
     scheduleVpnPoll();
