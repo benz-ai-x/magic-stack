@@ -358,7 +358,11 @@ class MagicProxyApp(rumps.App):
                 or not 0 <= index < len(rows)):
             return {"ok": False, "error": "bad_index"}
         server = rows[index]
-        if not server_openvpn(server).get("profile_set"):
+        # profile 判定以落盘文件为准（导入端点即时写文件）——不依赖保存
+        # 流的 profile_set 布尔：真机案例（2026-09-27）导入后未保存，连
+        # 接被 no_profile 弹回而用户只见「没反应」
+        if not (server_openvpn(server).get("profile_set")
+                or vpn_profile_store.profile_exists(server.get("id") or "")):
             return {"ok": False, "error": "no_profile"}
         # 互斥屏障（ADR-011 共识）：SSH 全活跃时拒连，UI 确认后 force 重发
         if not force and self._ssh_any_active():
