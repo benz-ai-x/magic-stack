@@ -121,13 +121,15 @@ class TestStateGrammar(unittest.TestCase):
         self.assertNotIn("reconnect_row", mb.refs)
         self.assertNotIn("servers_sub", mb.refs)
 
-    def test_access_rows_connected_ssh_and_reconnect(self):
+    def test_access_rows_connected_ssh_no_extra_rows(self):
+        """接入段恒两行（+多服务器时的服务器▸）——独立「重新连接」行
+        已删（用户裁决 2026-09-27：突兀；失败态再点 SSH 行即重连）。"""
         cfg = self._cfg()
         mb = self._build(_state(
             ssh_status="connected", config=cfg,
             current_server=cfg["servers"][0]))
         self.assertEqual(mb.refs["ssh_access"].title, "SSH · Aws-eu")
-        self.assertEqual(mb.refs["reconnect_row"].title, "重新连接")
+        self.assertNotIn("reconnect_row", mb.refs)
 
     def test_access_rows_vpn_connected_features_stay_enabled(self):
         """VPN 激活：VPN 行带 tun IP；重连行退场；功能段恒可用

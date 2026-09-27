@@ -448,25 +448,16 @@ class MenuBuilder:
     def _build_access_section(self):
         """接入段（定稿）：连接方式各一行——行即开关（Clash 模式）。
         圆点 = 状态（蓝=SSH 已连 / 绿=VPN 已连 / 黄=进行中 / 红=异常 /
-        无点=空闲），点击 = 动作（空闲连 / 活跃断 / 对端活跃确认切换）。
-        SSH 活跃模式附「重新连接」；多服务器时附「服务器 ▸」。标题与
-        圆点由 refresh_titles 就地刷新（占位标题防重名）。"""
+        无点=空闲），点击 = 动作（空闲连 / 活跃断 / 对端活跃确认切换；
+        失败态再点即重连——手动 kick 由行自身覆盖，不占独立行）。
+        多服务器时附「服务器 ▸」。标题与圆点由 refresh_titles 就地刷新
+        （占位标题防重名）。"""
         st = self._get_state()
         a = self._app
 
         row = rumps.MenuItem("__ssh_access__", callback=a.toggle_ssh, key="p")
         self.refs["ssh_access"] = row
         self._app.menu.add(row)
-
-        # 重新连接（SSH 活跃模式才有意义：手动 kick；VPN 自带重连）
-        vpn_active = st.vpn_status in ("connecting", "connected",
-                                       "reconnecting")
-        if not vpn_active and st.ssh_status in ("connected", "error"):
-            item = rumps.MenuItem(i18n.t("common.reconnect"),
-                                  callback=a.reconnect, key="r")
-            _apply_icon(item, "refresh")
-            self.refs["reconnect_row"] = item
-            self._app.menu.add(item)
 
         row = rumps.MenuItem("__vpn_access__", callback=a.toggle_vpn)
         self.refs["vpn_access"] = row
