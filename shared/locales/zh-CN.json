@@ -699,5 +699,7 @@
   "proxy.stop": "停止代理",
   "ui.vpn.confirm_btn": "确认切换",
   "ui.stale.title": "与应用的连接已失效",
-  "ui.stale.body": "此页面可能来自已退出的应用实例。请关闭本窗口，从菜单栏的 Magic Stack 图标重新打开「偏好设置」。"
+  "ui.stale.body": "此页面可能来自已退出的应用实例。请关闭本窗口，从菜单栏的 Magic Stack 图标重新打开「偏好设置」。",
+  "vpn.confirm_ok": "断开并连接",
+  "notify.vpn.ssh_active_body_force": "SSH 隧道与挂载正在运行。点「断开并连接」将停止它们并连接 VPN（SSH 不会自动恢复，随时可重新连接）。"
 }

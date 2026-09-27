@@ -699,5 +699,7 @@
   "proxy.stop": "Stop Proxy",
   "ui.vpn.confirm_btn": "Confirm Switch",
   "ui.stale.title": "Lost connection to the app",
-  "ui.stale.body": "This page may belong to an app instance that already exited. Close this window and reopen Settings from the Magic Stack menu-bar icon."
+  "ui.stale.body": "This page may belong to an app instance that already exited. Close this window and reopen Settings from the Magic Stack menu-bar icon.",
+  "vpn.confirm_ok": "Disconnect & Connect",
+  "notify.vpn.ssh_active_body_force": "SSH tunnels and mounts are running. Choosing Disconnect & Connect stops them and connects the VPN (SSH stays off until you reconnect)."
 }
