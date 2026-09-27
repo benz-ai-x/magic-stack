@@ -244,7 +244,9 @@ class TestVpnAccessSwitch(unittest.TestCase):
         with patch.object(app, "vpn_privilege") as priv, \
                 patch.object(app, "vpn_profile_store") as store, \
                 patch.object(app, "keychain"), \
+                patch.object(app, "vpn_dns_scripts") as dns, \
                 patch.object(app, "VpnClient") as vc:
+            dns.assets_current.return_value = True
             priv.resolve_openvpn_bin.return_value = "/opt/homevpn"
             store.load_profile.return_value = "client\nroute 10.0.0.0\n"
             priv.check_sudoers.return_value = True
