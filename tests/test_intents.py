@@ -253,3 +253,29 @@ class TestToggleForwardRow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStopProxy(unittest.TestCase):
+    def test_stop_proxy_teardown_order_and_dirty(self):
+        """关闭代理 = VPN 屏障同款 teardown：先卸 NFS 再停全部 SSH；
+        spawn 注入为同步执行——直接断言调用与顺序。"""
+        intents, conn, mounts, _notes, dirties = _intents()
+        intents.stop_proxy()
+        self.assertTrue(dirties)                      # dirty 即时标记
+        self.assertEqual(mounts.unmount_all.call_count, 1)
+        self.assertEqual(conn.stop_all.call_count, 1)
+        # 顺序：NFS 先卸（hard 挂载防 Finder 卡死），SSH 后停
+        order = []
+        mounts.unmount_all.side_effect = lambda: order.append("mounts")
+        conn.stop_all.side_effect = lambda: order.append("conn")
+        intents.stop_proxy()
+        self.assertEqual(order, ["mounts", "conn"])
+
+    def test_stop_proxy_spawns_background_when_async(self):
+        ran = []
+        intents, conn, mounts, _n, _d = _intents(spawn=lambda t, name: ran.append((t, name)))
+        intents.stop_proxy()
+        self.assertEqual(mounts.unmount_all.call_count, 0)   # 未直跑
+        self.assertIn("StopProxy", ran[0][1])
+        ran[0][0]()
+        self.assertEqual(conn.stop_all.call_count, 1)

@@ -88,6 +88,17 @@ class UserIntents:
         self._conn.restart(self._reload_config)
         self._mark_dirty()
 
+    def stop_proxy(self):
+        """关闭代理（设置窗显式按钮）：停**全部** SSH 会话（-D 代理 +
+        转发）+ 卸载 NFS——与 VPN 拆除屏障同一 teardown 半边（ADR-011
+        互斥粒度：全部 SSH 会话为整体，不拆零售）。停止即终止：不做
+        退避重试拉起（重启走显式「重新连接」/VPN 连接）。慢操作后台跑。"""
+        def _stop():
+            self._mounts.unmount_all()
+            self._conn.stop_all()
+        self._spawn(_stop, "StopProxy")
+        self._mark_dirty()
+
     # ── 端口转发会话（多活）──────────────────────────────
 
     def forward_session(self, tunnel_id, action):

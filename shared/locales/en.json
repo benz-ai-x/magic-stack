@@ -691,5 +691,9 @@
   "vpn.err.install_verify": "sudoers rule verification failed",
   "vpn.err.no_binary_code": "openvpn binary not found",
   "vpn.err.install_generic": "Admin authorization failed",
-  "ui.vpn.pick_import": "Choose .ovpn & Import"
+  "ui.vpn.pick_import": "Choose .ovpn & Import",
+  "ui.servers.stop_proxy": "Stop Proxy",
+  "ui.servers.stop_proxy_aria": "Stop proxy {name}",
+  "ui.servers.stop_proxy_title": "Stops all SSH sessions (proxy + port forwards) and unmounts NFS — prepares for connecting VPN; Reconnect restores anytime",
+  "ui.bridge.stop_proxy_native_only": "Stop Proxy needs the native settings window (not available in browser mode)"
 }

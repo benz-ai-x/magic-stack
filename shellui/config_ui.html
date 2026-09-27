@@ -1486,6 +1486,7 @@ function serversHTML(){
           <div class="section-actions">
             ${isCur?`<span class="fw-badge" title="${tt('ui.servers.cur_proxy_title')}">✓ ${tt('ui.servers.cur_proxy')}</span>`:(t.id?`<button class="btn btn-sm" aria-label="${tt('ui.servers.make_proxy_aria',{name:esc(tname)})}" onclick="setProxyServer()">${tt('ui.servers.make_proxy')}</button>`:'')}
             <button class="btn btn-sm" aria-label="${tt('ui.servers.reconnect_aria',{name:esc(tname)})}" onclick="reconnectProxy(this,'${esc(t.id||'')}')">${tt('common.reconnect')}</button>
+            <button class="btn btn-sm" aria-label="${tt('ui.servers.stop_proxy_aria',{name:esc(tname)})}" onclick="stopProxy(this)" title="${tt('ui.servers.stop_proxy_title')}">${tt('ui.servers.stop_proxy')}</button>
             <button class="btn btn-sm btn-danger" aria-label="${tt('ui.servers.delete_aria',{name:esc(tname)})}" onclick="cdel(this,function(){removeServer(${activeTunnel})})">${tt('ui.btn.delete')}</button>
           </div></div>
         <div class="svc-tabs" role="tablist" aria-label="${tt('ui.servers.tabs_aria')}">
@@ -1901,6 +1902,16 @@ function reconnectProxy(btn,tunnelId){
       setTimeout(()=>{btn.disabled=false;btn.textContent=tt('common.reconnect');},4000);}
     nativeSend('reconnectProxy',tunnelId?{tunnel_id:tunnelId}:{});
   }else toast(tt('ui.bridge.reconnect_native_only'));
+}
+// 关闭代理（设置窗显式按钮）：停全部 SSH 会话（-D + 转发）+ 卸载 NFS
+// ——与 VPN 拆除屏障同一 teardown（互斥准备）；经 bridge，浏览器直开
+// 回退提示（与重连同款降级）。停止即终止：不做退避拉起。
+function stopProxy(btn){
+  if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.bridge){
+    if(btn){btn.disabled=true;setTimeout(()=>{btn.disabled=false;},4000);}
+    nativeSend('stopProxy',{});
+    setTimeout(()=>{recomputeDirty();renderView();},1200);
+  }else toast(tt('ui.bridge.stop_proxy_native_only'));
 }
 // 多活：非代理隧道的转发会话启停（会话编排归原生侧 coordinator）
 function toggleForwardSession(btn,tunnelId,action){

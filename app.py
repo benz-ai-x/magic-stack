@@ -20,7 +20,7 @@ from shared.identity import IdentityMigrationError
 from sysctl import port_check
 from shellui.bridge_protocol import (ACTION_COPY_AGENT_INSTRUCTIONS,
     ACTION_FORWARD_SESSION, ACTION_NFS_MOUNT_TOGGLE, ACTION_OPEN_PATH,
-    ACTION_RECONNECT_PROXY)
+    ACTION_RECONNECT_PROXY, ACTION_STOP_PROXY)
 from shared.defaults import (DEFAULT_CAPTURE_DIR, DEFAULT_CAPTURE_PORT,
                              VPN_MANAGEMENT_PORT)
 from mpconf.config import (  # noqa: F401 — DEFAULT_CONFIG 是模块导出符号
@@ -1036,6 +1036,8 @@ class MagicProxyApp(rumps.App):
             self._intents.reconnect_proxy_or_forward(
                 action.get("tunnel_id"),
                 guarded=bool(action.get("if_connected")))
+        elif kind == ACTION_STOP_PROXY:
+            self._intents.stop_proxy()
         elif kind == ACTION_FORWARD_SESSION:
             tid = action.get("tunnel_id")
             if not tid:
