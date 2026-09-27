@@ -69,10 +69,12 @@ def _make_app(config=None):
 
 
 class TestConnectionActions(unittest.TestCase):
-    def test_cancel_connection_delegates(self):
+    def test_cancel_connection_stops_access_only(self):
+        """取消连接中的接入（ADR-011 修订）：只取消 -D 建连尝试，
+        转发会话不陪葬。"""
         a = _make_app()
         a.cancel_connection(None)
-        a._conn.cancel.assert_called_once()
+        a._conn.stop_access.assert_called_once()
 
     def test_reconnect_restarts_and_dirties(self):
         a = _make_app()
@@ -99,14 +101,15 @@ class TestConnectionActions(unittest.TestCase):
         a._sys_proxy.sync.assert_called_once()
         a._lifecycle.sync_sleep.assert_called_once()
 
-    def test_stop_proxy_tunnel_cancels_and_syncs(self):
-        """菜单「停止代理」（原暂停改造）：取消隧道 + 后置同步面对齐
-        toggle_pause（系统代理收敛 / 防睡眠重算）。"""
+    def test_stop_proxy_tunnel_stops_access_and_syncs(self):
+        """菜单「停止接入」（ADR-011 修订）：只停 -D 会话（stop_access）
+        ——转发/NFS 不陪葬；后置同步面对齐（系统代理收敛/防睡眠重算）。"""
         a = _make_app()
         a._conn.ssh.status = "connected"
         a._conn.paused = False
         a.stop_proxy_tunnel(None)
-        a._conn.cancel.assert_called_once()
+        a._conn.stop_access.assert_called_once()
+        a._conn.cancel.assert_not_called()
         a._sys_proxy.sync.assert_called_once()
         a._lifecycle.sync_sleep.assert_called_once()
 
@@ -120,13 +123,14 @@ class TestConnectionActions(unittest.TestCase):
         a._conn.restart.assert_called_once()
 
     def test_toggle_ssh_connected_click_stops(self):
-        """已连接点 SSH 行 = 停止代理（断开即终止，重连走接入行再点）。"""
+        """已连接点 SSH 行 = 停止接入（只停 -D，转发/NFS 不陪葬；
+        重连走接入行再点）。"""
         a = _make_app()
         a._vpn_client = None
         a._conn.ssh.status = "connected"
         a._conn.paused = False
         a.toggle_ssh(None)
-        a._conn.cancel.assert_called_once()
+        a._conn.stop_access.assert_called_once()
         a._sys_proxy.sync.assert_called_once()
         a._lifecycle.sync_sleep.assert_called_once()
 
@@ -136,7 +140,7 @@ class TestConnectionActions(unittest.TestCase):
         a._vpn_client = None
         a._conn.ssh.status = "connecting"
         a.toggle_ssh(None)
-        a._conn.cancel.assert_called_once()
+        a._conn.stop_access.assert_called_once()
 
     def test_toggle_ssh_confirms_when_vpn_active(self):
         """VPN 活跃时点 SSH 行：原生确认 → 断 VPN → 恢复 SSH 会话
@@ -154,8 +158,9 @@ class TestConnectionActions(unittest.TestCase):
         self.assertIn("ok", kwargs)
         a._intents.vpn_disconnect.assert_called_once()
         a._conn.start.assert_called_once()
-        a._conn.apply_autostarts.assert_called_once()
-        a._mounts.apply_autostarts.assert_called_once()
+        # 服务层自管：切换不再有「恢复面」（apply_autostarts 陪葬退役）
+        a._conn.apply_autostarts.assert_not_called()
+        a._mounts.apply_autostarts.assert_not_called()
 
     def test_toggle_vpn_ssh_active_confirm_alert_shape(self):
         """SSH 活跃时点「VPN 连接」：确认框形状回归——rumps.alert 的
@@ -166,7 +171,7 @@ class TestConnectionActions(unittest.TestCase):
              "ssh": {"host": "h1", "port": 22, "auth_type": "key"},
              "services": {"openvpn": {"profile_set": True}}}]})
         a._vpn_client = None
-        a._conn.any_connected = True
+        a._conn.ssh.status = "connected"      # 接入层活跃（-D 会话）
         a._mounts.mount_states.return_value = ()
         with patch("rumps.alert", return_value=False) as alert:
             a.toggle_vpn(None)          # 取消 → 不发起连接
@@ -216,6 +221,52 @@ class TestConnectionActions(unittest.TestCase):
         disk = _json.loads(open(config_store.PATHS["mp"]).read())
         self.assertEqual(disk.get("proxy_server_id"), "t-b")
         a._conn.restart.assert_called_once()
+
+
+class TestVpnAccessSwitch(unittest.TestCase):
+    """ADR-011 修订（接入层互斥/服务层自治）：连接 VPN 只停 -D 接入，
+    转发会话与 NFS 挂载不陪葬；VPN established 触发服务层重建。"""
+
+    def _vpn_ready_app(self):
+        import threading
+        a = _make_app({"servers": [
+            {"id": "t-1", "name": "s1",
+             "ssh": {"host": "h1", "port": 22, "auth_type": "key"},
+             "services": {"openvpn": {"profile_set": True}}}]})
+        a._vpn_client = None
+        a._vpn_connect_lock = threading.Lock()
+        return a
+
+    def test_vpn_connect_stops_access_only(self):
+        """屏障收窄：stop_access + 系统代理收敛；stop_all 与 NFS 卸载
+        绝不出现（此前 M2 全量屏障的陪葬面）。"""
+        a = self._vpn_ready_app()
+        with patch.object(app, "vpn_privilege") as priv, \
+                patch.object(app, "vpn_profile_store") as store, \
+                patch.object(app, "keychain"), \
+                patch.object(app, "VpnClient") as vc:
+            priv.resolve_openvpn_bin.return_value = "/opt/homevpn"
+            store.load_profile.return_value = "client\nroute 10.0.0.0\n"
+            priv.check_sudoers.return_value = True
+            a._vpn_do_connect_locked(a._config["servers"][0])
+        a._conn.stop_access.assert_called_once()
+        a._conn.stop_all.assert_not_called()
+        a._mounts.unmount_all.assert_not_called()
+        a._sys_proxy.sync.assert_called_once()
+        vc.assert_called_once()
+
+    def test_vpn_established_rebuilds_service_layer_only(self):
+        """VPN connected → 转发/NFS 会话僵尸重建；绝不拉起 -D
+        （接入互斥——handle_reconnect_trigger 不在此路径）。"""
+        a = self._vpn_ready_app()
+        a._on_vpn_state_change({"status": "connected"})
+        a._conn.reconnect_forwards_now.assert_called_once()
+        a._mounts.reconnect_now.assert_called_once()
+        a._conn.start_ssh.assert_not_called()
+        a._conn.handle_reconnect_trigger.assert_not_called()
+        # 非建立态：只刷菜单，不动会话
+        a._on_vpn_state_change({"status": "reconnecting"})
+        self.assertEqual(a._conn.reconnect_forwards_now.call_count, 1)
 
 
 class TestSuanpanActions(unittest.TestCase):
@@ -793,16 +844,19 @@ class TestToggleForward(unittest.TestCase):
         self.assertIn("已停止", msg)
         self.assertNotIn("重建中", msg)
 
-    def test_proxy_tunnel_rebuild_only_when_connected(self):
+    def test_proxy_tunnel_row_uses_uniform_path(self):
+        """ADR-011 修订：代理服务器自己的转发行也走独立会话守卫重建
+        ——点它不再重启整个 -D 接入（全流量中断的副作用退役）。"""
         a, tid = self._seed_and_app(
             [{"local_port": 9000, "remote_port": 80}])
         a._conn.proxy_server_id = tid   # 该隧道就是代理隧道
         a._conn.proxy_connected = False
         a.make_toggle_forward(tid, 0)(None)
-        a._conn.restart.assert_not_called()   # 代理未跑：只写配置
-        a._conn.proxy_connected = True
-        a.make_toggle_forward(tid, 0)(None)
-        a._conn.restart.assert_called_once()  # 连接中：翻转即重建代理会话
+        a._conn.restart.assert_not_called()   # 不再有代理重启分支
+        # 与非代理行同一路径：守卫重建（guard 在 coordinator 内判定）
+        a._conn.restart_forward_async.assert_called_once_with(
+            tid, a._reload_config_or_alert,
+            thread_name="ToggleForwardRebuild")
 
 
 class TestConfigHoldersAtomicity(unittest.TestCase):

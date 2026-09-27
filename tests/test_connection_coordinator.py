@@ -71,17 +71,6 @@ class TestTogglePause(unittest.TestCase):
         self.assertFalse(conn.paused)
 
 
-class TestCancel(unittest.TestCase):
-    def test_cancel_stops_everything(self):
-        conn = _make_coordinator()
-        with patch.object(conn._ssh, "stop") as mock_ssh_stop, \
-             patch.object(conn._proxy_runtime, "stop") as mock_proxy_stop:
-            conn.cancel()
-        mock_ssh_stop.assert_called_once()
-        mock_proxy_stop.assert_called_once()
-        self.assertFalse(conn.proxy_running)
-
-
 class TestTickSplit(unittest.TestCase):
     def test_check_ssh_noop_when_paused(self):
         conn = _make_coordinator()
@@ -106,6 +95,16 @@ class TestTickSplit(unittest.TestCase):
 
 
 class TestStopAll(unittest.TestCase):
+    def test_stop_all_stops_everything(self):
+        """全停面（退出路径专用）：-D + 全部转发会话 + 本地代理运行时。"""
+        conn = _make_coordinator()
+        with patch.object(conn._ssh, "stop") as mock_ssh_stop, \
+             patch.object(conn._proxy_runtime, "stop") as mock_proxy_stop:
+            conn.stop_all()
+        mock_ssh_stop.assert_called_once_with(blocking=False)
+        mock_proxy_stop.assert_called_once()
+        self.assertFalse(conn.proxy_running)
+
     def test_stop_all_non_blocking(self):
         conn = _make_coordinator()
         with patch.object(conn._ssh, "stop") as mock_ssh_stop, \
@@ -337,7 +336,7 @@ class TestThreadContract(unittest.TestCase):
         def stopper():
             while not stop.is_set():
                 try:
-                    conn.cancel()
+                    conn.stop_access()   # ADR-011 修订：-D 停止入口
                 except Exception as exc:
                     errors.append(("stopper", exc))
                     return
@@ -403,23 +402,32 @@ def _mutable_coordinator(cfg):
 
 class TestForwardSessions(unittest.TestCase):
     def test_start_forward_guards(self):
+        """拒绝只剩两条：服务器不存在 / 无启用中的转发规则（ADR-011
+        修订：代理服务器不再被拒——它同样走独立会话）。"""
         conn, _ = _mutable_coordinator(_multi_config())
-        for tid, why in (("t-nope", "不存在"), ("t-1", "代理服务器自身"),
-                         ("t-2", "无转发规则")):
-            if tid == "t-2":
-                conn._config_hack = None  # noqa: F841 — t2 有 forwards，另测
-                continue
-            ok, reason = conn.start_forward(tid)
-            self.assertFalse(ok, why)
-            self.assertTrue(reason)
+        ok, reason = conn.start_forward("t-nope")
+        self.assertFalse(ok)
+        self.assertTrue(reason)
         self.assertEqual(conn.forward_sessions(), [])
-        # t2 摘掉 forwards 后同样拒绝
+        # 摘掉 forwards 后拒绝（含代理服务器——没有规则就没有会话）
         cfg = _multi_config()
+        cfg["servers"][0]["services"]["ssh"]["forwards"] = []
         cfg["servers"][1]["services"]["ssh"]["forwards"] = []
         conn2, _ = _mutable_coordinator(cfg)
-        ok, reason = conn2.start_forward("t-2")
-        self.assertFalse(ok)
-        self.assertIn("转发", reason)
+        for tid in ("t-1", "t-2"):
+            ok, reason = conn2.start_forward(tid)
+            self.assertFalse(ok)
+            self.assertIn("转发", reason)
+
+    def test_start_forward_accepts_proxy_server(self):
+        """ADR-011 修订：代理服务器自己的 forwards 走独立纯 -L 会话
+        （-D 便车退役——停接入不再杀它的转发）。"""
+        conn, _ = _mutable_coordinator(_multi_config())
+        with patch("tunnel.ssh_session.SshSession.connect") as c:
+            ok, reason = conn.start_forward("t-1")
+        self.assertTrue(ok, reason)
+        c.assert_called_once()
+        self.assertIn("t-1", [tid for tid, _, _ in conn.forward_sessions()])
 
     def test_start_forward_creates_session_and_connects(self):
         conn, _ = _mutable_coordinator(_multi_config())
@@ -489,11 +497,12 @@ class TestForwardSessions(unittest.TestCase):
         self.assertTrue(conn.any_forward_session_connected)
 
 
-class TestRestartDowngrade(unittest.TestCase):
+class TestRestartServiceLayerAutonomy(unittest.TestCase):
+    """ADR-011 修订：restart 只重启 -D 接入；转发会话（服务层）自治——
+    既有会话存活，autostart 的（含代理服务器）由 apply_autostarts 补启。"""
+
     def _restart_with(self, cfg, mutate=None):
         conn, holder = _mutable_coordinator(cfg)
-        # 模拟代理会话实际跑在 t-1（_launched_proxy_id 是降级真相源）
-        conn._launched_proxy_id = "t-1"
         if mutate:
             mutate(holder)
         with patch.object(conn, "_start_background"), \
@@ -505,23 +514,38 @@ class TestRestartDowngrade(unittest.TestCase):
             conn.restart(lambda: None)  # reload 由调用方测试体控制 holder
         return conn
 
-    def test_old_proxy_with_forwards_downgrades_to_forward_session(self):
-        def switch_current(holder):
-            holder["cfg"]["proxy_server_id"] = "t-2"
-        conn = self._restart_with(_multi_config(), switch_current)
-        ids = [tid for tid, _, _ in conn.forward_sessions()]
-        self.assertIn("t-1", ids)  # 旧代理降级续跑
+    def test_forward_sessions_survive_access_restart(self):
+        """接入重启不碰既有转发会话——服务层与接入层解耦的核心断言。"""
+        conn, _ = _mutable_coordinator(_multi_config())
+        with patch("tunnel.ssh_session.SshSession.connect"):
+            conn.start_forward("t-2")
+        session = conn._forward_sessions["t-2"]
+        with patch.object(session, "stop") as sstop, \
+             patch.object(conn, "_start_background"), \
+             patch.object(conn, "start_ssh"), \
+             patch.object(conn._ssh, "stop"), \
+             patch.object(conn._proxy_runtime, "stop"), \
+             patch.object(conn._retry, "cancel"), \
+             patch.object(conn._host_key, "cancel"):
+            conn.restart(lambda: None)
+        sstop.assert_not_called()
+        self.assertIn("t-2",
+                      [tid for tid, _, _ in conn.forward_sessions()])
 
-    def test_old_proxy_without_forwards_stops_cleanly(self):
+    def test_old_proxy_autostarts_own_forward_session(self):
+        """切走代理角色后，旧代理按 autostart 获得独立会话（原「降级」
+        逻辑的自治化身影——由 apply_autostarts 统一收敛）。"""
         cfg = _multi_config()
-        cfg["servers"][0]["services"]["ssh"]["forwards"] = []
+        cfg["servers"][0]["services"]["ssh"]["autostart"] = True
 
         def switch_current(holder):
             holder["cfg"]["proxy_server_id"] = "t-2"
-        conn = self._restart_with(cfg, switch_current)
-        self.assertEqual(conn.forward_sessions(), [])
+        with patch("tunnel.ssh_session.SshSession.connect"):
+            conn = self._restart_with(cfg, switch_current)
+        self.assertIn("t-1",
+                      [tid for tid, _, _ in conn.forward_sessions()])
 
-    def test_same_proxy_no_downgrade_session_created(self):
+    def test_same_proxy_no_autostart_no_session(self):
         conn = self._restart_with(_multi_config())
         self.assertEqual(conn.forward_sessions(), [])
 
@@ -540,20 +564,58 @@ class TestWakeTriggerForwards(unittest.TestCase):
         mstop.assert_called_once()
         mconn.assert_called_once()
 
-    def test_apply_autostarts_skips_proxy_and_running(self):
+    def test_apply_autostarts_covers_proxy_and_running(self):
+        """ADR-011 修订：代理服务器不再跳过 autostart（自己的转发也
+        是服务层）；已在跑的不重复启动。"""
         cfg = _multi_config()
-        cfg["servers"][0]["services"]["ssh"]["autostart"] = True   # 代理：跳过
-        cfg["servers"][1]["services"]["ssh"]["autostart"] = True   # 正常补启
+        cfg["servers"][0]["services"]["ssh"]["autostart"] = True   # 代理：同样补启
+        cfg["servers"][1]["services"]["ssh"]["autostart"] = True
         conn, _ = _mutable_coordinator(cfg)
         with patch.object(conn, "start_forward") as sf:
             conn.apply_autostarts()
-        sf.assert_called_once_with("t-2")
+        sf.assert_any_call("t-1")
+        sf.assert_any_call("t-2")
         # 已在跑的不再重复启动
         with patch("tunnel.ssh_session.SshSession.connect"):
             conn.start_forward("t-2")
         with patch.object(conn, "start_forward") as sf2:
             conn.apply_autostarts()
-        sf2.assert_not_called()
+        sf2.assert_called_once_with("t-1")
+
+    def test_stop_access_keeps_forward_sessions(self):
+        """接入层切换（ADR-011 修订）：stop_access 只停 -D 会话与本地
+        代理运行时——转发会话不碰。"""
+        conn, _ = _mutable_coordinator(_multi_config())
+        with patch("tunnel.ssh_session.SshSession.connect"):
+            conn.start_forward("t-2")
+        session = conn._forward_sessions["t-2"]
+        with patch.object(conn._ssh, "stop") as ssh_stop, \
+             patch.object(conn._proxy_runtime, "stop") as rt_stop, \
+             patch.object(conn._retry, "cancel"), \
+             patch.object(conn._host_key, "cancel"), \
+             patch.object(session, "stop") as sstop:
+            conn.stop_access()
+        ssh_stop.assert_called_once_with(blocking=True)
+        rt_stop.assert_called_once()
+        sstop.assert_not_called()
+        self.assertIn("t-2",
+                      [tid for tid, _, _ in conn.forward_sessions()])
+
+    def test_vpn_reconnect_rebuilds_forwards_only(self):
+        """VPN 建立的服务层重建：转发会话僵尸重建，**绝不拉起 -D**
+        （接入互斥——与 handle_reconnect_trigger 的根本差异）。"""
+        conn, _ = _mutable_coordinator(_multi_config())
+        with patch("tunnel.ssh_session.SshSession.connect"):
+            conn.start_forward("t-2")
+        session = conn._forward_sessions["t-2"]
+        session.monitor._status = "connected"
+        with patch.object(session.monitor, "stop") as mstop, \
+             patch.object(session, "connect") as mconn, \
+             patch.object(conn, "start_ssh") as start_ssh:
+            conn.reconnect_forwards_now()
+        mstop.assert_called_once()
+        mconn.assert_called_once()
+        start_ssh.assert_not_called()
 
 
 class TestRestartForwardExplicitSemantics(unittest.TestCase):

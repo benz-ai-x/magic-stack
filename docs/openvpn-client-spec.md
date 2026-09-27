@@ -24,7 +24,7 @@ OpenVPN 客户端是第二种接入模式：**网络层接入**（utun 接口 + 
 ### 1.2 目标
 
 - M1：单服务器 VPN 连接的完整生命周期——导入 .ovpn、连接/断开、状态与错误可见。
-- M2：与 SSH 全量会话的模式互斥（切换屏障），设置窗 OpenVPN tab 转正。
+- M2：与 SSH 的模式互斥（接入层切换；ADR-011 修订后为接入层互斥/服务层自治），设置窗 OpenVPN tab 转正。
 - M3：DNS 应用与恢复、崩溃清理、流量统计、错误分类中文提示。
 
 ### 1.3 非目标（本期不做）
@@ -154,10 +154,10 @@ shared/
 
 services/
   server_check.py ── probe_openvpn 已有（远端安装态），不动
-  intents.py ── +vpn_connect / vpn_disconnect / vpn_reconnect 意图（互斥检查经
-    mode gate；线程纪律、通知、dirty 沿用独占）
-  mode_gate.py ── （新）模式互斥单一归宿：SSH 模式 / VPN 模式 / 空闲；切换事务 =
-    拆除屏障 + 起另一侧；对 ConnectionCoordinator 与 VpnClient 都是上层协调者
+  intents.py ── +vpn_connect / vpn_disconnect 意图（互斥检查 = 接入层谓词
+    _access_active；线程纪律、通知、dirty 沿用独占）
+  （原规划的 mode_gate.py 状态机不落地——ADR-011 修订后互斥退化为接入层
+    谓词 + stop_access 单点，无独立状态机必要）
 
 mpconf/
   config.py ── services.openvpn 读路径归一 normalize_openvpn + 访问器
@@ -176,10 +176,11 @@ shellui/
 
 ### 3.3 关键时序
 
-**连接**（intents.vpn_connect → mode_gate → VpnClient.start）：
+**连接**（intents.vpn_connect → app._vpn_do_connect → VpnClient.start）：
 
 ```
-0. mode_gate.switch_to_vpn()：拆除屏障（§7）全部 SSH 会话 stopped
+0. 接入层切换（ADR-011 修订）：ConnectionCoordinator.stop_access()——只停 -D
+   会话 + 系统代理收敛；转发/NFS 会话不碰（§6）
 1. 写 runtime conf（净化后 profile + 注入指令）→ root 目录落盘（首次/变更需管理员授权）
 2. 随机生成管理密码 → pw-file（固定路径，0600，内容每次可变）
 3. sudo -n openvpn --config … --management 127.0.0.1 <固定端口> <pw-file>
@@ -302,29 +303,36 @@ SIGTERM）→ 仍不退 SIGKILL（接受孤儿风险，靠 §5.4 收养清理兜
 
 ---
 
-## 6. 模式互斥（ADR-011 备忘的正式化）
+## 6. 模式互斥（ADR-011 修订版：接入层互斥 / 服务层自治，2026-09-27 定稿）
 
 ### 6.1 模型
 
-- 两模式：**SSH 模式**（代理 -D + 转发 -L + NFS——全部 SSH 会话为一个整体）与
-  **VPN 模式**。粒度必须是全部 SSH 会话，否则 VPN 的 redirect-gateway/路由与 SSH 流量
-  打架（路由坑复活）。
-- `services/mode_gate.py` 持当前模式态（`ssh | vpn | idle`）与切换事务：
+> 原始模型（M2 实施）：两模式 SSH（-D + 转发 + NFS 全家桶为整体）vs VPN，粒度必须是
+> 全部 SSH 会话。真机使用推翻——A 服务器做 VPN、B 服务器做转发/挂载的拓扑下，连 VPN
+> 不该陪葬 B 的会话。ADR-011 修订记录见 `docs/adr/011-server-centric-config.md`。
+
+- **接入层全局唯一**：任一台的 -D 代理或 OpenVPN，活跃接入数恒为 1；**服务层按服务器
+  自治**：各服务器的 -L 转发会话与 NFS 会话独立运行，不随接入切换陪葬。
+- 互斥屏障收窄到接入层（内联在 `_vpn_do_connect_locked`，规划中的 `mode_gate.py`
+  状态机随屏障收窄不再必要——互斥判定退化为「-D 接入活跃」谓词）：
 
 ```
 switch_to_vpn():
-  1. 拆除屏障：ConnectionCoordinator 停代理 + 全部转发会话；MountCoordinator 卸载
-     全部挂载（复用既有 stop 路径，逐项等 stopped，带总超时与进度通知）
-  2. 屏障达成 → VpnClient.start（§3.3 时序）
-switch_to_ssh(): 对称（VPN 断开并等进程退出 → 按配置拉起 SSH 侧）
-vpn_stopped(): VPN 断开后落 idle，**不自动回切 SSH**（ADR-011 共识）
+  1. 接入层切换：ConnectionCoordinator.stop_access()——只停 -D 会话
+     （含重试/host-key/本地代理运行时），转发会话与 NFS 会话不碰；
+     系统代理收敛（别指着死掉的 :8888）
+  2. → VpnClient.start（§3.3 时序）
+  3. VPN connected → 服务层僵尸重建（转发 + NFS 会话 reconnect_now，
+     与唤醒事件同语义；绝不拉起 -D）——路由翻转断掉的存量 TCP 自愈
+switch_to_ssh(): 对称（VPN 断开 → conn.start()；服务会话自管，无需恢复面）
+vpn_stopped(): VPN 断开后不自动回切接入（ADR-011 语义保留）
 ```
 
-- 「未连接绝不拉起」守卫语义自然延伸：autostart、保存后自动应用等 guarded 路径在
-  mode_gate 处检查模式一致；用户在 SSH 活跃时启用 VPN autostart → 只置配置态不拉起，
-  菜单给「切换到 VPN 模式」显式动作。
-- intents 层两个 adapter（菜单回调 / 设置窗桥接）共用同一意图面，互斥文案（「将断开
-  全部 SSH 隧道与挂载，确认切换？」）经确认回调注入。
+- 只能经 VPN 到达的服务器，在 VPN 未连时其转发行如实亮红（无限退避重试照常）。
+- 「未连接绝不拉起」守卫按会话粒度原样保留；-D 便车退役：代理服务器自己的转发改
+  独立纯 -L 会话（`build_tunnel_command` 代理模式结构上忽略 forwards）。
+- intents 层互斥判定：`_access_active`（仅 -D 会话 connecting/connected）——转发/
+  挂载在跑不拦 VPN；确认文案口径「断开 SSH 代理接入，端口映射与挂载不受影响」。
 
 ### 6.2 附录：管理口命令/事件速查（实施时 mgmt_client.py 的对照面）
 
@@ -413,12 +421,15 @@ sudoers 安装是保存后的显式「安装到系统」动作（管理员授权
 
 ### M2 — 模式互斥 + UI 转正
 
-交付：`services/mode_gate.py`、intents 三意图、菜单组、设置窗 tab、RuntimeProjection。
+> M2 按「全量屏障」实施并真机验收通过；下列验收项中的屏障粒度已被 ADR-011 修订
+> （2026-09-27）取代为接入层互斥/服务层自治——历史记录保留，现行语义见 §6。
+
+交付：intents 两意图、菜单组、设置窗 tab、RuntimeProjection。
 验收：
-- SSH 全活跃（代理 + 2 转发 + NFS 挂载）时连接 VPN：确认 → 屏障逐项停净（含卸载）
-  → VPN 起；反向对称。
-- VPN 断开后不自动回切 SSH；autostart 的 guarded 语义测试钉死。
-- 互斥期间菜单动词/状态词随模式态正确推导（真值表测试）。
+- SSH 全活跃（代理 + 2 转发 + NFS 挂载）时连接 VPN：确认 → ~~屏障逐项停净（含卸载）~~
+  只停 -D 接入（转发/挂载原地不动，ADR-011 修订）→ VPN 起；反向对称。
+- VPN 断开后不自动回切接入；autostart 的 guarded 语义测试钉死。
+- 互斥期间菜单动词/状态词随接入态正确推导（真值表测试）。
 
 ### M3 — 加固
 

@@ -129,18 +129,19 @@ class TestStateGrammar(unittest.TestCase):
         self.assertEqual(mb.refs["ssh_access"].title, "SSH · Aws-eu")
         self.assertEqual(mb.refs["reconnect_row"].title, "重新连接")
 
-    def test_access_rows_vpn_connected_and_features_dimmed(self):
-        """VPN 激活：VPN 行带 tun IP；重连行退场；功能段整段置灰
-        （结构恒定——明示「有这些、当前连接方式不可用」）。"""
+    def test_access_rows_vpn_connected_features_stay_enabled(self):
+        """VPN 激活：VPN 行带 tun IP；重连行退场；功能段恒可用
+        （ADR-011 修订：服务层自治——转发/挂载/系统代理不随接入陪葬，
+        各行圆点自证健康）。"""
         mb = self._build(_state(
             vpn_status="connected", vpn_tun_ip="10.8.0.2",
             config=self._cfg()))
         self.assertEqual(mb.refs["vpn_access"].title, "VPN · 10.8.0.2")
         self.assertNotIn("reconnect_row", mb.refs)
-        self.assertFalse(
+        self.assertTrue(
             mb.refs["sys_proxy_check"]._menuitem.isEnabled())
-        self.assertFalse(mb.refs["group_forward"]._menuitem.isEnabled())
-        self.assertFalse(mb.refs["group_mount"]._menuitem.isEnabled())
+        self.assertTrue(mb.refs["group_forward"]._menuitem.isEnabled())
+        self.assertTrue(mb.refs["group_mount"]._menuitem.isEnabled())
 
     def test_access_servers_submenu_multi_server_only(self):
         """多服务器 → 接入段「服务器 ▸」（当前上游 ✓ 打头）；单服务器
@@ -247,16 +248,18 @@ class TestMultiActiveTunnels(unittest.TestCase):
         self.assertEqual(mb.refs["sys_proxy_check"]._menuitem.state(), 0)
 
     def test_forward_submenu_structure(self):
+        """ADR-011 修订：全服务器统一行结构——代理服务器（t-1）也是
+        普通包装行（会话启停/重连），「随代理运行」上下文行退役。"""
         parent, subs = self._submenu(
             "端口映射", forward_states=(ForwardState("t-2", "AWS-ap", "connected"),))
         titles = self._titles
-        self.assertTrue(any("随代理运行" in t for t in titles),
-                        titles)  # 代理隧道信息行（带重启警示尾）
-        self.assertTrue(any("启停将重启代理" in t for t in titles), titles)
+        self.assertFalse(any("随代理运行" in t for t in titles), titles)
+        self.assertFalse(any("启停将重启代理" in t for t in titles), titles)
         running = [s for s in subs if s.title.startswith("AWS-ap")]
+        idle = [s for s in subs if s.title.startswith("Aws-eu")]
         self.assertTrue(running, titles)
         self.assertIn("— 转发中", running[0].title)
-        self.assertNotIn("9001→81", running[0].title)  # 端口串移出隧道行标题
+        self.assertIn("— 未启动", idle[0].title)   # 代理服务器无独立会话时如实显示
         items = [i.title for i in list(running[0].values())
                  if hasattr(i, "title")]
         # 逐条转发子行（点击即启停）在前，会话动作在后（标签随状态刷新）
@@ -297,10 +300,14 @@ class TestMultiActiveTunnels(unittest.TestCase):
                if hasattr(r, "title") and r.title == "添加转发规则…"][0]
         self.assertIs(row.callback, app.show_prefs_forwards)
 
-    def test_forward_submenu_proxy_row_reflects_disconnected(self):
+    def test_forward_submenu_proxy_row_uniform_when_disconnected(self):
+        """代理服务器行与会话状态解耦：-D 断开不再影响它的转发行
+        呈现（有无独立会话由 forward_states 说话）。"""
         parent, _ = self._submenu("端口映射", ssh_status="stopped")
-        titles = self._titles
-        self.assertIn("Aws-eu — 未随代理运行", titles)
+        idle = [t for t in self._titles if t.startswith("Aws-eu")]
+        self.assertTrue(idle)
+        self.assertIn("— 未启动", idle[0])
+        self.assertNotIn("随代理运行", idle[0])
 
     def test_forward_submenu_single_tunnel_flattens(self):
         """单隧道拍平：转发行一级直达（免隧道包装行的嵌套）。"""
@@ -317,9 +324,12 @@ class TestMultiActiveTunnels(unittest.TestCase):
                 ssh_status="connected", config=cfg))
             parent = mb._build_forward_submenu()
         titles = [r.title for r in parent.values() if hasattr(r, "title")]
-        # 上下文行 + 转发行都在顶层（一级），上下文行带重启警示
-        self.assertIn("Aws-eu — 随代理运行 · 启停将重启代理", titles)
-        self.assertIn("7001 → 71 · 已映射", titles)
+        # 拍平依旧：转发行与动作行都在顶层（一级）；代理服务器不再有
+        # 特判上下文行。无独立会话（forward_states 空）→ 如实未连接 +
+        # 启动动作在（会话口径与 -D 状态解耦）
+        self.assertIn("7001 → 71 · 未连接", titles)
+        self.assertIn("启动端口转发", titles)
+        self.assertFalse(any("随代理运行" in t for t in titles), titles)
 
     def test_footer_slim(self):
         """应用段（定稿）：偏好/日志/关于/退出四行；防睡眠与登录启动
@@ -608,16 +618,21 @@ class TestForwardRowPerItemToggle(unittest.TestCase):
         self.assertIn("9002 → 82 · 已停用", titles)
 
     def test_proxy_tunnel_forwards_get_rows(self):
+        """ADR-011 修订：代理服务器的转发行与会话统一口径——有独立
+        会话（forward_states 含它）时行亮绿、动作行随会话。"""
         cfg = self._cfg()
         cfg["servers"][0]["services"]["ssh"]["forwards"] = [
             {"local_port": 7001, "remote_port": 71}]
-        parent = self._fw_menu(cfg=cfg)
+        parent = self._fw_menu(
+            cfg=cfg,
+            forward_states=(ForwardState("t-1", "Aws-eu", "connected"),
+                            ForwardState("t-2", "AWS-ap", "connected")))
         proxy_rows = [i for i in parent.values()
                       if hasattr(i, "title") and i.title.startswith("Aws-eu")]
         sub_titles = [i.title for i in list(proxy_rows[0].values())
                       if hasattr(i, "title")]
-        # 代理隧道信息行的子项里有逐条转发行（点击启停，守卫重建代理会话）
         self.assertIn("7001 → 71 · 已映射", sub_titles)
+        self.assertIn("停止端口转发", sub_titles)   # 与非代理行同结构
 
     def test_forward_row_pending_when_session_down(self):
         parent = self._fw_menu(ssh_status="stopped", forward_states=())

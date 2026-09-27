@@ -103,10 +103,6 @@ class ConnectionCoordinator:
         # 多活转发会话注册表：tunnel_id → SshSession
         self._forward_sessions = {}
         self._ssh_log_sink = ssh_log_sink
-        # 代理会话实际启动时的隧道 id——restart 的降级判定必须用「跑着
-        # 的那条」而非配置里的 proxy_server_id（切换流在 restart 前就已把
-        # 角色写成新值）
-        self._launched_proxy_id = None
 
     # ── config-derived properties ───────────────────────
 
@@ -243,17 +239,14 @@ class ConnectionCoordinator:
     # ── 转发会话生命周期（多活） ─────────────────────────
 
     def start_forward(self, tunnel_id):
-        """启动一条纯 -L 转发会话。返回 (ok, reason)。
-
-        拒绝条件：隧道不存在 / 无转发规则 / 是代理隧道自身（代理隧道
-        的 forwards 随其代理会话一起跑）。
+        """启动一条纯 -L 转发会话（服务层按服务器自治，ADR-011 修订：
+        代理服务器同样走独立会话——-D 会话恒纯 -D，不再搭载便车）。
+        返回 (ok, reason)。拒绝条件：服务器不存在 / 无启用中的转发规则。
         """
         with self._lifecycle_lock:
             tunnel = self._server_by_id(tunnel_id)
             if tunnel is None:
                 return False, "服务器不存在"
-            if tunnel_id == self.proxy_server_id:
-                return False, "代理服务器自身随「连接代理」启动"
             if not has_enabled_forwards(tunnel):
                 return False, "该服务器没有启用中的端口转发规则"
             if tunnel_id in self._forward_sessions:
@@ -336,13 +329,13 @@ class ConnectionCoordinator:
         return True
 
     def apply_autostarts(self):
-        """按 services.ssh.autostart 收敛补启（app 启动与配置重载后调用）。"""
+        """按 services.ssh.autostart 收敛补启（app 启动与配置重载后调用）。
+        ADR-011 修订：代理服务器不再跳过——它的转发与 -D 接入各自独立。"""
         for t in self._config.get("servers", []):
             if not (isinstance(t, dict) and (t.get("services") or {}).get("ssh", {}).get("autostart")):
                 continue
             tid = t.get("id")
-            if tid and tid != self.proxy_server_id \
-                    and tid not in self._forward_sessions \
+            if tid and tid not in self._forward_sessions \
                     and has_enabled_forwards(t):
                 self.start_forward(tid)
 
@@ -364,19 +357,25 @@ class ConnectionCoordinator:
             for session in list(self._forward_sessions.values()):
                 session.reconnect_now()
 
+    def reconnect_forwards_now(self):
+        """接入层事件（VPN established 等）→ 服务层僵尸重建：全部转发
+        会话 reconnect_now（与唤醒同语义——路由翻转后健康会话也可能是
+        半死 TCP，主动重建比等 keepalive 判死稳）。**只碰转发会话**，
+        绝不拉起 -D（接入互斥——这是它与 handle_reconnect_trigger 的
+        根本差异，后者会把代理半边一起重建）。"""
+        with self._lifecycle_lock:
+            for session in list(self._forward_sessions.values()):
+                session.reconnect_now()
+
     def restart(self, reload_config_fn):
         """Full stop + config reload + restart（多活版）。
 
-        代理会话照旧整体重启；旧代理隧道降级续跑（有 forwards 则转纯
-        转发会话，无则彻底停）；既有转发会话按重载后配置收敛（隧道被
-        删/无 forwards 的停掉，autostart 的补启，其余保持运行不动——
-        改动某条隧道的 forwards 由 restart_forward 单会话重建，不在此
-        大换血）。
+        只重启 -D 接入会话（ADR-011 修订：接入层/服务层分离）；转发会话
+        与 NFS 会话是服务层，各自存活——被删/无 forwards 的由
+        check_forwards 收敛，autostart 的由 apply_autostarts 补启，
+        「旧代理降级为转发会话」的便车补偿随 -L 便车退役一并消失。
         """
         with self._lifecycle_lock:
-            # 降级对象 = 实际跑着的代理服务器（非配置角色——
-            # 切换流在 restart 前就已改写它）
-            old_proxy_id = self._launched_proxy_id
             self._retry.cancel()
             self._host_key.cancel()
             self._ssh.stop()
@@ -385,28 +384,20 @@ class ConnectionCoordinator:
             reload_config_fn()
             self._start_background()
             self.start_ssh()
-            # 旧代理隧道降级续跑：有 forwards 转 0-D 会话；无则清干净
-            if old_proxy_id and old_proxy_id != self.proxy_server_id:
-                old_tunnel = self._server_by_id(old_proxy_id)
-                if old_tunnel and has_enabled_forwards(old_tunnel):
-                    if old_proxy_id not in self._forward_sessions:
-                        self.start_forward(old_proxy_id)
-                else:
-                    self.stop_forward(old_proxy_id)
             self.apply_autostarts()
 
-    def cancel(self):
-        """Cancel an in-flight SSH connection attempt."""
+    def stop_access(self, blocking=True):
+        """接入层切换（ADR-011 修订，2026-09-27）：只停 -D 代理会话
+        （含重试调度 / host-key 流程 / 本地代理运行时）——转发会话与
+        NFS 会话属服务层，不在此面（此前无此入口，cancel/stop_all 均
+        为全停）。"""
         with self._lifecycle_lock:
             self._retry.cancel()
             self._host_key.cancel()
-            self._ssh.stop()
-            for session in list(self._forward_sessions.values()):
-                session.stop()
-            self._forward_sessions.clear()
+            self._ssh.stop(blocking=blocking)
             self._proxy_running = False
             self._proxy_runtime.stop()
-            logger.info("connection cancelled by user")
+            logger.info("access (-D) stopped; service sessions untouched")
 
     def toggle_pause(self):
         """Pause/resume proxy. Returns new paused state."""
@@ -454,10 +445,9 @@ class ConnectionCoordinator:
         self._start_proxy_ssh()
 
     def _start_proxy_ssh(self):
-        """启动代理会话的 ssh（host-key 首连与重试共用），并记录实际
-        启动的隧道 id——restart 降级判定的真相源。"""
+        """启动代理会话的 ssh（host-key 首连与重试共用）——恒纯 -D
+        （ADR-011 修订：代理服务器自己的 forwards 走独立转发会话）。"""
         tunnel = self.current_server
         if tunnel:
-            self._launched_proxy_id = tunnel.get("id")
             self._ssh.start(tunnel, self.socks5_port,
                             self._get_tunnel_password(tunnel))

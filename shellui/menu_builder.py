@@ -381,11 +381,12 @@ class MenuBuilder:
     # ── full build ────────────────────────────────────────
 
     def build(self):
-        """五段结构（2026-09-27 定稿，行即开关）：状态（流量/异常——仅
-        活跃时有行）→ 接入（SSH/VPN 行即开关）→ 功能（系统代理/端口
-        映射/远程挂载，VPN 时置灰）→ AI ▸ → 应用（偏好/日志/关于/
-        退出）。连接状态不再三处重复：接入行圆点即状态，菜单栏图标
-        同语义（灰=无连接/蓝=SSH/绿=VPN/黄=进行中）。"""
+        """五段结构（2026-09-27 定稿，行即开关；ADR-011 修订）：状态
+        （流量/异常——仅活跃时有行）→ 接入（SSH/VPN 行即开关）→ 功能
+        （系统代理/端口映射/远程挂载——服务层自治，恒可用；经代理启动
+        随 -D 接入态单独置灰）→ AI ▸ → 应用。连接状态不再三处重复：
+        接入行圆点即状态，菜单栏图标同语义（灰=无连接/蓝=SSH/绿=VPN/
+        黄=进行中）。"""
         app = self._app
         app.menu.clear()
         self.refs = {}
@@ -489,16 +490,15 @@ class MenuBuilder:
             self.refs["servers_sub"] = sub
             self._app.menu.add(sub)
 
-    # ── 功能段：连上之后用什么（VPN 激活时整段置灰）──────────────
+    # ── 功能段：连上之后用什么（服务层自治，恒可用）──────────────
 
     def _build_features_section(self):
         """功能段：系统代理（B 类 ✓）+ 端口映射/远程挂载组 + 经代理
-        启动。都建立在 SSH 连接之上——VPN 激活时整段置灰（结构恒定：
-        就地刷新机制的前提，明示「有这些、当前连接方式不可用」）。"""
+        启动。端口映射与挂载是服务层（ADR-011 修订）——永不随 VPN
+        置灰，各行圆点自证健康；经代理启动依赖 -D 接入（:8888 上游），
+        接入未连接时单独置灰（接入态在 struct_key 内，态变重建换灰）。"""
         st = self._get_state()
         a = self._app
-        ssh_dim = st.vpn_status in ("connecting", "connected",
-                                    "reconnecting")
         rows = []
 
         item = rumps.MenuItem(i18n.t("proxy.sysproxy"),
@@ -510,7 +510,7 @@ class MenuBuilder:
         rows.append(self._build_forward_submenu())
         rows.append(self._build_mount_submenu())
 
-        # 经代理启动（装了 Chromium 系应用才出现）
+        # 经代理启动（装了 Chromium 系应用才出现；依赖 -D 接入）
         apps_list = chromium_proxy.installed_apps()
         if apps_list:
             sub = rumps.MenuItem(i18n.t("proxy.launch_apps"), callback=None)
@@ -521,11 +521,13 @@ class MenuBuilder:
                 _apply_icon(item, "launch")
                 sub.add(item)
             rows.append(sub)
+            self.refs["launch_apps_menu"] = sub
 
         for item in rows:
             self._app.menu.add(item)
-            if ssh_dim:
-                _set_enabled(item, False)
+        if "launch_apps_menu" in self.refs:
+            _set_enabled(self.refs["launch_apps_menu"],
+                         st.ssh_status == "connected")
 
     # ── AI 合并组（重设计 ④）：路由 + 抓包 ──────────────────
 
@@ -589,15 +591,15 @@ class MenuBuilder:
         return parent
 
     def _build_forward_submenu(self):
-        """端口映射 ▸ —— 只管纯 -L 转发会话（多活）：代理隧道自身显示
-        「随代理运行」信息行；其余隧道各自启停/单会话重连。
+        """端口映射 ▸ —— 每台服务器一条独立纯 -L 会话（ADR-011 修订：
+        全服务器统一行结构——代理服务器不再特判，「随代理运行」上下文
+        行与「启停将重启代理」警示随 -L 便车退役一并消失）。
 
         逐条启停（v0.11）：每条转发独立成行（点击即启停），圆点随会话
         状态着色、停用行灰点。UX 批次：①单隧道拍平（包装行只在多隧道
         时有意义——转发行一级直达）；②行结构**恒定**（会话启停动作恒
         在，标签由刷新段定「启动/停止」），状态/文案就地刷新——后台
-        状态翻转不重建整树；③代理隧道的行点击会重启整个代理会话（全
-        代理流量中断），连接中在隧道行标题明示。
+        状态翻转不重建整树。
         """
         st = self._get_state()
         a = self._app
@@ -611,46 +613,34 @@ class MenuBuilder:
             tid = t.get("id") or f"#{i}"
             forwards = server_forwards(t)
             any_rules = any_rules or bool(forwards)
-            is_proxy = _is_proxy_server(st.config, t)
             if single:
                 host = parent          # 拍平：行直接挂顶层（免一层嵌套）
             else:
-                # 多隧道：包装行承载隧道名/尾标；代理隧道的包装行即
-                # 「随代理运行」上下文行（转发行挂其下）。占位标题按
-                # 隧道 id 唯一——rumps Menu 以标题为键，重名行互相覆盖
+                # 多隧道：包装行承载隧道名/尾标。占位标题按隧道 id
+                # 唯一——rumps Menu 以标题为键，重名行互相覆盖
                 host = rumps.MenuItem(f"__fw_tunnel_{tid}__", callback=None)
-                if is_proxy:
-                    _apply_icon(host, "circle", point_size=9)
-                    self.refs[("fw_ctx", tid)] = host
-                else:
-                    _apply_icon(host, "tunnel_row")
-                    self.refs[("fw_tunnel", tid)] = host
-            if is_proxy and single:
-                ctx = rumps.MenuItem(f"__fw_ctx_{tid}__", callback=None)
-                _apply_icon(ctx, "circle", point_size=9)
-                self.refs[("fw_ctx", tid)] = ctx
-                host.add(ctx)
+                _apply_icon(host, "tunnel_row")
+                self.refs[("fw_tunnel", tid)] = host
             self._add_forward_rows(host, a, tid, forwards)
-            if not is_proxy:
-                # 逐条转发行在前、会话动作在后（v0.12 既定行序）
-                host.add(None)
-                if forwards:
-                    action = rumps.MenuItem(
-                        f"__fw_action_{tid}__",
-                        callback=a.toggle_forward_session(tid))
-                    _apply_icon(action, "fw_start")
-                    self.refs[("fw_action", tid)] = action
-                    host.add(action)
-                    item = rumps.MenuItem(
-                        i18n.t("common.reconnect"),
-                        callback=a.make_reconnect_tunnel(tid))
-                    _apply_icon(item, "refresh")
-                    host.add(item)
-                else:
-                    item = rumps.MenuItem(
-                        i18n.t("forward.add_rule"), callback=a.show_prefs_forwards)
-                    _apply_icon(item, "forward_menu")
-                    host.add(item)
+            # 逐条转发行在前、会话动作在后（v0.12 既定行序）
+            host.add(None)
+            if forwards:
+                action = rumps.MenuItem(
+                    f"__fw_action_{tid}__",
+                    callback=a.toggle_forward_session(tid))
+                _apply_icon(action, "fw_start")
+                self.refs[("fw_action", tid)] = action
+                host.add(action)
+                item = rumps.MenuItem(
+                    i18n.t("common.reconnect"),
+                    callback=a.make_reconnect_tunnel(tid))
+                _apply_icon(item, "refresh")
+                host.add(item)
+            else:
+                item = rumps.MenuItem(
+                    i18n.t("forward.add_rule"), callback=a.show_prefs_forwards)
+                _apply_icon(item, "forward_menu")
+                host.add(item)
             if not single:
                 parent.add(host)
                 parent.add(None)
@@ -678,7 +668,8 @@ class MenuBuilder:
     def _refresh_forward_rows(self, st):
         """端口映射区动态段：隧道行尾标、逐条转发行尾标与圆点、启停
         动作标签。每秒 tick 调用——只在标题变化时重挂图标（SF Symbol
-        查找不便宜，不能每 tick 全量重设）。"""
+        查找不便宜，不能每 tick 全量重设）。全服务器统一口径（ADR-011
+        修订：代理服务器也是 forward_states 里的一条）。"""
         tunnels = servers(st.config)
         fw_running = {f.tunnel_id: f.status
                       for f in (st.forward_states or ())}
@@ -688,45 +679,29 @@ class MenuBuilder:
             tid = t.get("id") or f"#{i}"
             name = t.get("name") or \
                 f"{(t.get('ssh') or {}).get('user', '')}@{(t.get('ssh') or {}).get('host', '')}"
-            is_proxy = _is_proxy_server(st.config, t)
-            if is_proxy:
-                row = self.refs.get(("fw_ctx", tid))
-                if row is not None:
-                    on = st.ssh_status == "connected"
-                    # 点击代理隧道的转发行 = 重启代理会话（全流量中断），
-                    # 副作用在行标题明示——先于点击可见
-                    title = i18n.t(
-                        "forward.ctx.running" if on
-                        else "forward.ctx.not_running", name=name)
-                    if row.title != title:
-                        row.title = title
-                        _apply_status_dot(
-                            row, "ok" if on else "idle", point_size=9)
-            else:
-                row = self.refs.get(("fw_tunnel", tid))
-                if row is not None:
-                    status = fw_running.get(tid)
-                    if status is None:
-                        kind, key = _FW_SESSION_OFF
-                    else:
-                        kind, key = _FW_SESSION.get(
-                            status, _FW_SESSION_RETRY)
-                    new_title = f"{name}{i18n.t(key)}"
-                    if row.title != new_title:
-                        row.title = new_title
-                        _apply_status_dot(row, kind, point_size=9)
-                action = self.refs.get(("fw_action", tid))
-                if action is not None:
-                    running = tid in fw_running
-                    new_title = i18n.t(
-                        "forward.action.stop" if running
-                        else "forward.action.start")
-                    if action.title != new_title:  # 图标随标题变化才重挂
-                        action.title = new_title
-                        _apply_icon(action,
-                                    "fw_stop" if running else "fw_start")
-            session_up = (st.ssh_status == "connected" if is_proxy
-                          else fw_running.get(tid) == "connected")
+            row = self.refs.get(("fw_tunnel", tid))
+            if row is not None:
+                status = fw_running.get(tid)
+                if status is None:
+                    kind, key = _FW_SESSION_OFF
+                else:
+                    kind, key = _FW_SESSION.get(
+                        status, _FW_SESSION_RETRY)
+                new_title = f"{name}{i18n.t(key)}"
+                if row.title != new_title:
+                    row.title = new_title
+                    _apply_status_dot(row, kind, point_size=9)
+            action = self.refs.get(("fw_action", tid))
+            if action is not None:
+                running = tid in fw_running
+                new_title = i18n.t(
+                    "forward.action.stop" if running
+                    else "forward.action.start")
+                if action.title != new_title:  # 图标随标题变化才重挂
+                    action.title = new_title
+                    _apply_icon(action,
+                                "fw_stop" if running else "fw_start")
+            session_up = fw_running.get(tid) == "connected"
             for fi, f in enumerate(server_forwards(t)):
                 if not isinstance(f, dict):
                     continue

@@ -19,12 +19,13 @@ class TestConnCoordTickPaths(unittest.TestCase):
         conn._ssh._status = "error"
         return conn
 
-    def test_cancel_calls_stop(self):
+    def test_stop_access_calls_stop(self):
+        """接入层停止入口（ADR-011 修订）：-D 会话 + 本地代理运行时。"""
         conn = self._make()
         conn._ssh._status = "connecting"
         with patch.object(conn._ssh, "stop"), \
              patch.object(conn._proxy_runtime, "stop"):
-            conn.cancel()
+            conn.stop_access()
         self.assertFalse(conn.proxy_running)
 
 
