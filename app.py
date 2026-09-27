@@ -30,6 +30,7 @@ from mpconf.config import (  # noqa: F401 — DEFAULT_CONFIG 是模块导出符�
 from mount.coordinator import MountCoordinator
 from vpn import privilege as vpn_privilege
 from vpn import profile_store as vpn_profile_store
+from vpn import dns_scripts as vpn_dns_scripts
 from vpn.openvpn_client import VpnClient
 from shared.runtime_state import RuntimeProjection
 from shellui.log_window import LogBuffer, show_log_window
@@ -462,8 +463,12 @@ class MagicProxyApp(rumps.App):
             return
         svc = server_openvpn(server)
         mgmt_pw = keychain.ensure_vpn_mgmt_password()
-        if not vpn_privilege.check_sudoers(binary):
-            logger.info("vpn connect: sudoers missing, installing")
+        # 重装条件：sudoers 缺失，或磁盘 dns 脚本不是当前版本（脚本
+        # 0755 可读可比对；conf 0600 不可读——其重装挂脚本版本：dns/
+        # conf 组成变更即 bump SCRIPTS_VERSION，杜绝「conf 用到天荒地老」）
+        if not vpn_privilege.check_sudoers(binary) \
+                or not vpn_dns_scripts.assets_current():
+            logger.info("vpn connect: sudoers/assets outdated, installing")
             ok, code = vpn_privilege.install(
                 conf_text=vpn_privilege.runtime_conf(
                     profile_text, pull_dns=svc.get("pull_dns", True)),

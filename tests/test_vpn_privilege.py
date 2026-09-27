@@ -187,6 +187,56 @@ class TestDnsScripts(unittest.TestCase):
         with mock.patch.object(dns_scripts.os.path, "exists",
                                return_value=True):
             self.assertTrue(dns_scripts.marker_exists())
+
+    def test_up_script_installs_ipv6_reject_route(self):
+        """IPv4-only 隧道的 v6 绕行堵口：up 装 reject 路由（立即回不可达
+        → happy-eyeballs 瞬间回落 v4；redirect-gateway ipv6 在 macOS 装
+        不上路由，真机实锄 2026-09-28）。"""
+        self.assertIn("route -n add -inet6 -reject", dns_scripts.UP_SCRIPT)
+        self.assertIn("2000::/3", dns_scripts.UP_SCRIPT)
+
+    def test_down_script_withdraws_route_and_guards_generation(self):
+        """down 摘 reject 路由 + 代际守卫：还有别的 openvpn 实例在跑就
+        绝不还原（迟到/孤儿 down 把新连接刚应用的 DNS 还原掉的竞态，
+        2026-09-28 双击重连真机案例）。pgrep 必须 -x（精确进程名）——
+        sudo 包装进程的命令行同样含 openvpn，-f 会把父 sudo 误判为
+        存活实例导致永不还原。"""
+        self.assertIn("route -n delete -inet6 -reject",
+                      dns_scripts.DOWN_SCRIPT)
+        self.assertIn("pgrep -x openvpn", dns_scripts.DOWN_SCRIPT)
+        self.assertIn('grep -vw "$PPID"', dns_scripts.DOWN_SCRIPT)
+        self.assertNotIn("pgrep -f", dns_scripts.DOWN_SCRIPT)
+
+    def test_scripts_log_decisions(self):
+        """诊断日志（此前无日志只能考古）：每个判定分支都落 dns.log。"""
+        for text in (dns_scripts.UP_SCRIPT, dns_scripts.DOWN_SCRIPT):
+            self.assertIn(dns_scripts.LOG_PATH, text)
+            self.assertIn(">> \"$LOG\"", text)
+
+    def test_scripts_embed_version_marker(self):
+        for text in (dns_scripts.UP_SCRIPT, dns_scripts.DOWN_SCRIPT):
+            self.assertIn(f"# version: {dns_scripts.SCRIPTS_VERSION}", text)
+
+    def test_assets_current_compares_version_marker(self):
+        """磁盘脚本 0755 可读——版本注记缺失/旧版即触发重装（conf 0600
+        不可读，其重装挂脚本版本）。"""
+        import tempfile, os as _os
+        with tempfile.TemporaryDirectory() as td:
+            up = _os.path.join(td, "dns-up.sh")
+            down = _os.path.join(td, "dns-down.sh")
+            cur = f"# version: {dns_scripts.SCRIPTS_VERSION}"
+            with mock.patch.object(dns_scripts, "DNS_UP_PATH", up), \
+                 mock.patch.object(dns_scripts, "DNS_DOWN_PATH", down):
+                self.assertFalse(dns_scripts.assets_current())  # 不存在
+                with open(up, "w") as f:
+                    f.write("#!/bin/sh\n" + cur + "\n")
+                self.assertFalse(dns_scripts.assets_current())  # 只有 up
+                with open(down, "w") as f:
+                    f.write("old\n")                             # 旧版 down
+                self.assertFalse(dns_scripts.assets_current())
+                with open(down, "w") as f:
+                    f.write("#!/bin/sh\n" + cur + "\n")
+                self.assertTrue(dns_scripts.assets_current())
         with mock.patch.object(dns_scripts.os.path, "exists",
                                return_value=False):
             self.assertFalse(dns_scripts.marker_exists())
