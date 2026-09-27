@@ -68,13 +68,6 @@ def server_rows_errors(mp) -> list:
     return errors
 
 
-def openvpn_node(server):
-    """v2 形状：OpenVPN 服务节点（services.openvpn；非 dict 返回 None）。"""
-    svc = server.get("services") if isinstance(server.get("services"), dict) else {}
-    vpn = svc.get("openvpn")
-    return vpn if isinstance(vpn, dict) else None
-
-
 def _vpn_errors(tname, vpn) -> list:
     """openvpn 服务节校验（M2 最小面）：auth 枚举 + userpass 须用户名。
     profile 正文不在 config（独立 0600 文件，spec §4）——此处只校配置面；
