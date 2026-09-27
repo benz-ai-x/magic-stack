@@ -16,3 +16,6 @@ class RuntimeProjection(NamedTuple):
     capture_active: bool = False
     forwards: tuple = ()    # [ForwardState]（tunnel 域命名投影）
     mounts: tuple = ()      # [MountState]（mount 域命名投影）
+    # VPN 隧道层快照 dict（vpn 域 VpnClient.snapshot——status/tun_ip/错误/
+    # 速率；无连接 = None）。全局单条（spec §5.3 不变量），非 per-server。
+    vpn: dict | None = None

@@ -127,7 +127,7 @@ mount/ ── NFSv4 over SSH 隧道挂载（ADR-007；跨域白名单边 mount�
     reconcile：断线强制卸载/恢复自动重挂，worker 线程跑子进程）
 
 vpn/ ── OpenVPN 客户端域（spec 与调研：docs/openvpn-client-spec.md；
-  M1 域核心——与 SSH 模式互斥的编排层 mode_gate 属后续里程碑）
+  M1 域核心；M2 接线已落：设置窗端点/菜单组/意图/互斥屏障——连接时停全部 SSH 会话与 NFS（断开不回切），正式 mode_gate 状态机属后续里程碑）
   profile.py ── .ovpn 解析/校验/净化单一归宿：脚本/管理类指令剥除
     （root 执行面第二道闸）+ auth-user-pass 改查询式 + inline 块整段
     跳过（块内指令形状的行绝不误伤）
@@ -203,7 +203,7 @@ services/ ── 服务
     失败退避/忙位参数化——LifecycleRuntime 1s tick 喂拍（worker 提交）
     与 docker 主循环（内联执行）两 adapter 共用；谓词仍是
     suanpan_runtime.audit
-  intents.py ── 用户意图单一归宿（R5）：菜单回调与设置窗桥接两套
+  intents.py ── 用户意图单一归宿（R5）：菜单回调与设置窗桥接（含 VPN HTTP 端点）两套
     adapter 共用的意图面——guard 分派/线程纪律（慢操作 daemon 后台）/
     通知文案/dirty 标记独占；依赖全注入纯 Python 可构造，测试直打
     公开意图面（tests/test_intents.py 真值表）
@@ -236,7 +236,7 @@ suanpan/ ── AI 路由网关子包（ADR-010 三协议入站：Anthropic Mess
 
 **线程模型：** 主线程跑 rumps NSRunLoop（菜单栏）。后台 daemon 线程跑：asyncio 事件循环（代理服务 ProxyRuntime）、Suanpan 网关（uvicorn）、config server（http.server）。
 
-**菜单：** 六组结构（状态区 / 代 理 / 端口映射 / 远程挂载 / AI 路由 / 抓 包 / 选 项 ＋ 页脚）以 `shellui/menu_builder.py` 为准；**菜单状态语法**（A 类运行物 = 动词标题 + 状态点四值 + 状态词；B 类设置 = 中性名词 + 原生 ✓；组标题仅异常挂 ⚠；状态圆点为手绘位图）见 `CONTEXT.md`「菜单状态语法」；菜单项图标走 SF Symbols（旧系统静默降级）
+**菜单：** 七组结构（状态区 / 代 理 / 端口映射 / 远程挂载 / VPN 网络 / AI 路由 / 抓 包 / 选 项 ＋ 页脚）以 `shellui/menu_builder.py` 为准；**菜单状态语法**（A 类运行物 = 动词标题 + 状态点四值 + 状态词；B 类设置 = 中性名词 + 原生 ✓；组标题仅异常挂 ⚠；状态圆点为手绘位图）见 `CONTEXT.md`「菜单状态语法」；菜单项图标走 SF Symbols（旧系统静默降级）
 
 **偏好设置：** 菜单「偏好设置…」打开 WKWebView 窗口（`http://127.0.0.1:9528/`）。侧边栏分组：代理（服务器（单视图：连接/端口映射/NFS/OpenVPN 横向 tab）/ 网络设置）+ AI 路由（快速接入 / 供应商 / Claude Code 同步 / 运行统计 / 余额速览）+ 系统（系统选项）。同一页面可浏览器直开（输 token 登录）——依赖原生 bridge 的操作在该场景逐项降级（重连/转发启停给 toast 提示；「复制 AI 助手指令」经认证 `GET /api/agent-instructions` 回退）。:9528 生命周期（ADR-009）：默认**不常驻**——三持有者（设置窗开着 / 复制指令会话闩锁 / `config_api_enabled` 常驻开关）任一在场才监听（细节见 `CONTEXT.md`「服务生命周期」）。
 

@@ -24,7 +24,11 @@ from tunnel import ssh_launch
 from mount import remote_setup
 from services import claude_code_setup
 from capture import capture_store
-from mpconf.config import load_config, merge_config, decorate_runtime_state
+from mpconf.config import (load_config, merge_config, decorate_runtime_state,
+                           server_openvpn)
+from vpn import privilege as vpn_privilege
+from vpn import profile as vpn_profile
+from vpn import profile_store as vpn_profile_store
 from services.balance_usage import fetch_balance
 from services.provider_probe import (
     fetch_models,
@@ -630,6 +634,83 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._json(200, {"ok": True})
 
+    # ── VPN 端点（spec §7.2：设置窗 OpenVPN 面）───────────────────
+    # profile 导入/凭证/安装是纯服务端动作（净化 + 落盘 + Keychain +
+    # 特权引导）；connect/disconnect 归 app（VpnClient 持有者）——经
+    # ConfigServer 上注入的回调 seam（vpn_connect_fn / vpn_disconnect_fn，
+    # 与 runtime_state_fn 同款注入模式）。
+
+    def _api_vpn_profile(self, data):
+        """导入 .ovpn：净化 → 0600 落盘 → 剥除清单/凭证需求回执。
+        profile_set 布尔不在此翻转——UI 按导入成功置位、随保存流持久化
+        （两阶段保存契约，spec §7.2）。"""
+        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        if error:
+            self._json(400, {"error": error})
+            return
+        content = data.get("content")
+        if not isinstance(content, str) or not content.strip():
+            self._json(400, {"error": i18n.t("vpn.err.empty_profile")})
+            return
+        clean, info = vpn_profile.sanitize_profile(content)
+        if info.error:
+            self._json(400, {"error": i18n.t("vpn.err.no_remote")})
+            return
+        if not vpn_profile_store.save_profile(tunnel.get("id") or "", clean):
+            self._json(500, {"error": i18n.t("vpn.err.save_failed")})
+            return
+        self._json(200, {
+            "ok": True,
+            "removed": [d for d, _line in info.removed],
+            "removed_lines": [line for _d, line in info.removed],
+            "needs_credentials": info.needs_credentials,
+            "missing_client_role": info.missing_client_role,
+        })
+
+    def _api_vpn_credentials(self, data):
+        """VPN 密码 → Keychain 槽（用户名是 config 字段走正常保存流）。"""
+        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        if error:
+            self._json(400, {"error": error})
+            return
+        password = data.get("password")
+        if not isinstance(password, str) or not password:
+            self._json(400, {"error": i18n.t("vpn.err.empty_password")})
+            return
+        self._json(200, {"ok": keychain.set_vpn_password(tunnel, password)})
+
+    def _api_vpn_install(self, data):
+        """安装到系统：runtime conf + sudoers + DNS 脚本一次管理员授权
+        （幂等）。pull_dns 读已保存配置——先保存再安装。"""
+        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        if error:
+            self._json(400, {"error": error})
+            return
+        text = vpn_profile_store.load_profile(tunnel.get("id") or "")
+        if not text.strip():
+            self._json(400, {"error": i18n.t("vpn.err.not_imported")})
+            return
+        pull_dns = server_openvpn(tunnel).get("pull_dns", True)
+        conf_text = vpn_privilege.runtime_conf(text, pull_dns=pull_dns)
+        ok, code = vpn_privilege.install(
+            conf_text=conf_text,
+            mgmt_password=keychain.ensure_vpn_mgmt_password())
+        self._json(200, {"ok": ok, "error_code": "" if ok else code})
+
+    def _api_vpn_connect(self, data):
+        fn = getattr(self.server, "vpn_connect_fn", None)
+        if fn is None:
+            self._json(503, {"error": "vpn not available"})
+            return
+        self._json(200, fn(data.get("index"), force=data.get("force") is True))
+
+    def _api_vpn_disconnect(self, data):
+        fn = getattr(self.server, "vpn_disconnect_fn", None)
+        if fn is None:
+            self._json(503, {"error": "vpn not available"})
+            return
+        self._json(200, fn())
+
     # ── 隧道解析（index 路径单一归宿，test/test-forward/NFS 共用）──
 
     @staticmethod
@@ -685,6 +766,11 @@ _API_POST = {
     "/api/probe-provider": _Handler._api_probe_provider,
     "/api/agent-setup-preview": _Handler._api_agent_setup_preview,
     "/api/setup-agent": _Handler._api_setup_agent,
+    "/api/vpn-profile": _Handler._api_vpn_profile,
+    "/api/vpn-credentials": _Handler._api_vpn_credentials,
+    "/api/vpn-install": _Handler._api_vpn_install,
+    "/api/vpn-connect": _Handler._api_vpn_connect,
+    "/api/vpn-disconnect": _Handler._api_vpn_disconnect,
 }
 _API_PUT = {
     "/api/state": _Handler._api_put_state,

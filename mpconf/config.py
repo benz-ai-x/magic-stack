@@ -528,7 +528,8 @@ def merge_config(cfg):
 # 键；config_state.READONLY_DECORATED_FIELDS 的运行态半边由此派生——
 # 「新增一条运行态事实 = 此处加一个键」替代两份手维护名单
 RUNTIME_DECORATED_FIELDS = frozenset(
-    {"capture_active", "is_proxy", "forward_running", "nfs_states"})
+    {"capture_active", "is_proxy", "forward_running", "nfs_states",
+     "vpn_state"})
 
 
 def decorate_runtime_state(mp, proj):
@@ -557,6 +558,9 @@ def decorate_runtime_state(mp, proj):
                 "fixable": getattr(entry, "fixable", ""),
             }
     mp["capture_active"] = bool(getattr(proj, "capture_active", False))
+    # VPN 全局单连接装饰（spec §5.3）：无连接/缺席投影 = 空块（UI 判
+    # status 键缺席即视为未启动）
+    mp["vpn_state"] = getattr(proj, "vpn", None) or {}
     role = proxy_server(mp)
     for s in servers(mp):
         if not isinstance(s, dict):

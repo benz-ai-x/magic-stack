@@ -277,6 +277,10 @@ class MenuState:
     # 界面语言（ADR-012，resolved 值非偏好值）：进 struct_key——语言
     # 翻转走既有整树重建机制，文案在 build/refresh 时经 i18n.t 取词
     language: str = DEFAULT_LANGUAGE
+    # VPN（M2 接线）：全局单连接的状态面（spec §5.3——非 per-server）
+    vpn_status: str = "idle"
+    vpn_server: str = ""
+    vpn_error: str = ""
 
 
 # ── builder ──────────────────────────────────────────────────────
@@ -300,6 +304,15 @@ _MOUNT_TAIL = {"mounted": ("ok", "mount.tail.mounted"),
                "unmounting": ("warn", "mount.tail.unmounting"),
                "unmounted": ("idle", "mount.tail.unmounted"),
                "error": ("err", "mount.tail.error")}
+
+# VPN 行（A 类：动词标题 + 状态点 + 行尾状态词；status 在 struct_key
+# 内，态变即重建换点换词）
+_VPN_TAIL = {"connecting": ("warn", "vpn.tail.connecting"),
+             "connected": ("ok", "vpn.tail.connected"),
+             "reconnecting": ("warn", "vpn.tail.reconnecting"),
+             "exiting": ("warn", "vpn.tail.exiting"),
+             "error": ("err", "vpn.tail.error"),
+             "stopped": ("idle", "vpn.tail.stopped")}
 
 
 class MenuBuilder:
@@ -356,6 +369,8 @@ class MenuBuilder:
             st.capture_state,        # 状态点（err↔ok 随重建换点）
             st.capture_hint,
             st.language,             # ADR-012：语言翻转 → 整树重建换文案
+            st.vpn_status,           # VPN 态变 → 重建（换动词/点/状态词）
+            st.vpn_server,
         )
 
     # ── full build ────────────────────────────────────────
@@ -370,6 +385,7 @@ class MenuBuilder:
         app.menu.add(self._build_proxy_submenu())
         app.menu.add(self._build_forward_submenu())
         app.menu.add(self._build_mount_submenu())
+        app.menu.add(self._build_vpn_submenu())
         app.menu.add(self._build_suanpan_submenu())
         app.menu.add(self._build_capture_submenu())
         app.menu.add(self._build_system_submenu())
@@ -723,6 +739,29 @@ class MenuBuilder:
                     action.title = new_title
                     _apply_icon(action, "fw_stop" if active else "fw_start")
 
+    def _build_vpn_submenu(self):
+        """VPN 网络 ▸ —— 全局单连接（spec §5.3）：一行动词 + 状态点 +
+        行尾状态词（A 类语法）；未配置时点击打开设置窗。"""
+        st = self._get_state()
+        a = self._app
+        parent = rumps.MenuItem(i18n.t("menu.group.vpn"), callback=None)
+        _apply_icon(parent, "shield")
+        self.refs["group_vpn"] = parent
+
+        active = st.vpn_status in ("connecting", "connected", "reconnecting")
+        verb = i18n.t("vpn.disconnect" if active else "vpn.connect")
+        target = _truncate(st.vpn_server, 24) if st.vpn_server else ""
+        kind, key = _VPN_TAIL.get(st.vpn_status, ("idle", "vpn.tail.idle"))
+        item = rumps.MenuItem(f"{verb} {target} · {i18n.t(key)}".strip(),
+                              callback=a.toggle_vpn)
+        _apply_status_dot(item, kind, point_size=10)
+        parent.add(item)
+
+        if st.vpn_status == "error" and st.vpn_error:
+            parent.add(rumps.MenuItem(
+                f"  {_truncate(st.vpn_error, 60)}", callback=None))
+        return parent
+
     def _build_capture_submenu(self):
         a = self._app
         st = self._get_state()
@@ -939,6 +978,8 @@ class MenuBuilder:
              1 if st.ssh_status == "error" else 0),
             ("group_forward", "menu.group.forward", fw_bad),
             ("group_mount", "menu.group.mount", mounts_bad),
+            ("group_vpn", "menu.group.vpn",
+             1 if st.vpn_status == "error" else 0),
             ("group_router", "menu.group.router",
              1 if st.suanpan_error else 0),
             ("group_capture", "menu.group.capture",

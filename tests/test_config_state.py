@@ -699,7 +699,7 @@ class TestReadonlyDecoratedFields(unittest.TestCase):
         self.assertEqual(READONLY_DECORATED_FIELDS,
                          frozenset({"has_password", "capture_active",
                                     "is_proxy", "forward_running",
-                                    "nfs_states"}))
+                                    "nfs_states", "vpn_state"}))
 
     def test_prepare_strips_exactly_the_declared_fields(self):
         """注入字段全被剥除（持久化配置永不携带），未声明字段不受累。"""

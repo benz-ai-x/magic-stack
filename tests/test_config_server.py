@@ -1442,5 +1442,5 @@ class TestDispatchTables(unittest.TestCase):
         # 端点增减须显式改这里的数字——防表项被误删
         from services import config_server as cs
         self.assertEqual(len(cs._API_GET), 7)
-        self.assertEqual(len(cs._API_POST), 13)
+        self.assertEqual(len(cs._API_POST), 18)
         self.assertEqual(len(cs._API_PUT), 1)

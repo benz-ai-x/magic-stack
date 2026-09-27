@@ -72,6 +72,31 @@ def server_rows_errors(mp) -> list:
         _nfs = _nfs_svc(_t)
         if _nfs is not None:
             errors += _nfs_errors(_tname, _nfs)
+        _vpn = _vpn_svc(_t)
+        if _vpn is not None:
+            errors += _vpn_errors(_tname, _vpn)
+    return errors
+
+
+def _vpn_svc(server):
+    """v2 形状：OpenVPN 服务节点（services.openvpn；非 dict 返回 None）。"""
+    svc = server.get("services") if isinstance(server.get("services"), dict) else {}
+    vpn = svc.get("openvpn")
+    return vpn if isinstance(vpn, dict) else None
+
+
+def _vpn_errors(tname, vpn) -> list:
+    """openvpn 服务节校验（M2 最小面）：auth 枚举 + userpass 须用户名。
+    profile 正文不在 config（独立 0600 文件，spec §4）——此处只校配置面；
+    与设置窗 validateConfig 的 openvpn 段是镜像关系（校验镜像纪律）。"""
+    errors = []
+    _auth = vpn.get("auth")
+    if _auth not in (None, "", "none", "userpass"):
+        errors.append(f"服务器 {tname} 的 openvpn.auth 无效（须 none 或 userpass）")
+    if _auth == "userpass":
+        _user = vpn.get("username")
+        if not isinstance(_user, str) or not _user.strip():
+            errors.append(f"服务器 {tname} 启用 OpenVPN 密码认证时用户名不能为空")
     return errors
 
 
