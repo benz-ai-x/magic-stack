@@ -281,6 +281,7 @@ class MenuState:
     vpn_status: str = "idle"
     vpn_server: str = ""
     vpn_error: str = ""
+    vpn_tun_ip: str = ""
 
 
 # ── builder ──────────────────────────────────────────────────────
@@ -314,6 +315,18 @@ _VPN_TAIL = {"connecting": ("warn", "vpn.tail.connecting"),
              "error": ("err", "vpn.tail.error"),
              "stopped": ("idle", "vpn.tail.stopped")}
 
+
+
+def _set_enabled(item, on):
+    """行置灰（NSMenuItem.setEnabled——rumps 未封装，经 _menuitem 通道，
+    与 _apply_icon 的 setImage 同款）。置灰不隐藏：结构恒定（就地刷新
+    机制的前提），且明示「有这些、当前模式不可用」。"""
+    if item is None:
+        return
+    try:
+        item._menuitem.setEnabled_(bool(on))
+    except Exception:
+        pass
 
 class MenuBuilder:
     """Builds and refreshes the menu bar UI from a state snapshot.
@@ -376,19 +389,20 @@ class MenuBuilder:
     # ── full build ────────────────────────────────────────
 
     def build(self):
+        """四段结构（2026-09-27 重设计）：状态总览（SSH/VPN 同框）→
+        接入模式（互斥单选）→ SSH 模式段（VPN 模式时置灰）→ AI ▸ →
+        尾部（选项收编：高频开关直陈，配置进设置窗）。"""
         app = self._app
         app.menu.clear()
         self.refs = {}
 
         self._build_header()
         app.menu.add(None)
-        app.menu.add(self._build_proxy_submenu())
-        app.menu.add(self._build_forward_submenu())
-        app.menu.add(self._build_mount_submenu())
-        app.menu.add(self._build_vpn_submenu())
-        app.menu.add(self._build_suanpan_submenu())
-        app.menu.add(self._build_capture_submenu())
-        app.menu.add(self._build_system_submenu())
+        self._build_mode_section()
+        app.menu.add(None)
+        self._build_ssh_section()
+        app.menu.add(None)
+        app.menu.add(self._build_ai_submenu())
         app.menu.add(None)
         self._build_footer()
         self.refresh_titles()
@@ -415,6 +429,10 @@ class MenuBuilder:
             point_size=10)
         app.menu.add(refs["router_status"])
 
+        # VPN status line（重设计 ①：与 SSH 行同框——互斥现状一眼可见）
+        refs["vpn_status"] = rumps.MenuItem("__vpn_status__", callback=None)
+        app.menu.add(refs["vpn_status"])
+
         # Connecting log lines
         if s == "connecting" and st.ssh_cmd_str:
             app.menu.add(rumps.MenuItem(f"  {_truncate(st.ssh_cmd_str, 60)}", callback=None))
@@ -433,82 +451,189 @@ class MenuBuilder:
                         color=_status_color("idle"))
             app.menu.add(refs["traffic"])
 
-    def _build_proxy_submenu(self):
-        """代 理 ▸ —— 只管那条唯一的 -D 会话（SOCKS5 上游）：启停/暂停/
-        重连、系统代理、代理角色单选、经代理启动。"""
+
+
+    # ── 接入模式段（重设计 ②）：互斥单选一等公民 ──────────────
+
+    def _build_mode_section(self):
+        """接入模式（互斥单选，B 类 ✓）：SSH 全家桶 vs VPN 二选一。
+        点未选中模式 = 切换（SSH→VPN 走 toggle_vpn 的原生确认；VPN→SSH
+        走 switch_mode_ssh 的确认+恢复）。VPN 激活时多一行「断开 VPN」。
+        单选行点当前模式 = 无操作（单选语义）。"""
         st = self._get_state()
         a = self._app
-        parent = rumps.MenuItem(i18n.t("menu.group.proxy"), callback=None)
-        _apply_icon(parent, "proxy_menu")
+        self.refs["mode_label"] = rumps.MenuItem(
+            i18n.t("mode.section"), callback=None)
+        self._app.menu.add(self.refs["mode_label"])
 
-        # Connect control
+        vpn_active = st.vpn_status in ("connecting", "connected",
+                                       "reconnecting")
+        item = rumps.MenuItem(i18n.t("mode.ssh"),
+                              callback=a.switch_mode_ssh)
+        _apply_check(item, not vpn_active)
+        self._app.menu.add(item)
+
+        item = rumps.MenuItem(i18n.t("mode.vpn"), callback=a.toggle_vpn)
+        _apply_check(item, vpn_active)
+        self._app.menu.add(item)
+
+        if vpn_active:
+            item = rumps.MenuItem(
+                i18n.t("vpn.disconnect") + " · " + i18n.t(
+                    "vpn.tail." + {"connecting": "connecting",
+                                   "connected": "connected",
+                                   "reconnecting": "reconnecting"}.get(
+                                       st.vpn_status, "connected")),
+                callback=a.toggle_vpn, key="v")
+            _apply_status_dot(item, "ok" if st.vpn_status == "connected"
+                              else "warn", point_size=9)
+            self._app.menu.add(item)
+
+    # ── SSH 模式段（重设计 ③）：VPN 模式时整段置灰 ────────────
+
+    def _build_ssh_section(self):
+        """SSH 隧道模式的会话控制 + 系统代理 + 端口映射/远程挂载/服务器。
+        VPN 模式时整段置灰（结构恒定——就地刷新机制的前提）。"""
+        st = self._get_state()
+        a = self._app
+        ssh_dim = st.vpn_status in ("connecting", "connected",
+                                    "reconnecting")
+        rows = []
+
         s = st.ssh_status
         if s == "connecting":
             item = rumps.MenuItem(i18n.t("proxy.cancel_connect"),
                                   callback=a.cancel_connection, key="r")
             _apply_icon(item, "cancel")
-            parent.add(item)
+            rows.append(item)
         else:
-            if st.paused:
-                item = rumps.MenuItem(i18n.t("proxy.resume"),
-                                      callback=a.toggle_pause, key="p")
-                _apply_icon(item, "connect")
-                parent.add(item)
-            elif s == "connected":
-                # 停止代理（原「暂停代理」）：取消 SSH 隧道连接——停止即
-                # 终止，恢复走「重新连接」（用户裁决，2026-09-27）
-                item = rumps.MenuItem(i18n.t("proxy.stop"),
-                                      callback=a.stop_proxy_tunnel, key="p")
-                _apply_icon(item, "cancel")
-                parent.add(item)
             item = rumps.MenuItem(
-                i18n.t("common.reconnect")
-                if s in ("connected", "error") else i18n.t("proxy.connect"),
-                callback=a.reconnect, key="r")
+                i18n.t("proxy.stop") if s == "connected"
+                else i18n.t("proxy.connect"),
+                callback=a.stop_proxy_tunnel if s == "connected"
+                else a.reconnect, key="p")
+            _apply_icon(item, "cancel" if s == "connected" else "connect")
+            rows.append(item)
+            item = rumps.MenuItem(i18n.t("common.reconnect"),
+                                  callback=a.reconnect, key="r")
             _apply_icon(item, "refresh")
-            parent.add(item)
+            rows.append(item)
 
-        # System proxy toggle（A 类运行物状态语法：标题=动作，状态点=现状）
-        parent.add(None)
-        sysp_title = i18n.t("proxy.sysproxy_off" if st.sys_proxy_on
-                            else "proxy.sysproxy_on")
-        item = rumps.MenuItem(sysp_title, callback=a.toggle_system_proxy, key="g")
-        _apply_status_dot(item, "err" if st.sys_proxy_error
-                          else ("ok" if st.sys_proxy_on else "idle"),
-                          point_size=9)
-        parent.add(item)
+        # 系统代理（B 类改版）：中性名词 + 原生 ✓（动词式开关退役）
+        item = rumps.MenuItem(i18n.t("proxy.sysproxy"),
+                              callback=a.toggle_system_proxy, key="g")
+        _apply_check(item, st.sys_proxy_on)
+        self.refs["sys_proxy_check"] = item
+        rows.append(item)
 
-        # 代理角色单选（哪条隧道当 SOCKS5 上游）
-        rows = st.config.get("servers", [])
-        if rows:
-            parent.add(None)
-            parent.add(rumps.MenuItem(i18n.t("proxy.upstream_header"),
-                                      callback=None))
-            for t in rows:
+        # 端口映射 / 远程挂载（组标题 rollup 保留）
+        fw_parent = self._build_forward_submenu()
+        mnt_parent = self._build_mount_submenu()
+        rows.append(fw_parent)
+        rows.append(mnt_parent)
+
+        # 服务器（仅多服务器时出现——渐进披露；含单选与经代理启动）
+        rows_tunnels = servers(st.config)
+        if len(rows_tunnels) > 1:
+            sub = rumps.MenuItem(i18n.t("proxy.upstream_header"),
+                                 callback=None)
+            _apply_icon(sub, "tunnel_row")
+            for t in rows_tunnels:
                 if not isinstance(t, dict):
                     continue
                 _ssh = t.get("ssh") or {}
                 marker = "✓ " if _is_proxy_server(st.config, t) else ""
-                name = t.get("name") or f"{_ssh.get('user', '')}@{_ssh.get('host', '')}"
-                item = rumps.MenuItem(f"{marker}{name}",
-                                      callback=a.make_switch_server(t.get("id") or ""))
-                _apply_icon(item, "tunnel_row")
-                parent.add(item)
-
-        # Proxied app launches
-        apps_list = chromium_proxy.installed_apps()
-        if apps_list:
-            parent.add(None)
-            sub = rumps.MenuItem(i18n.t("proxy.launch_apps"), callback=None)
-            _apply_icon(sub, "launch")
-            for entry in apps_list:
+                name = t.get("name") or                     f"{_ssh.get('user', '')}@{_ssh.get('host', '')}"
                 item = rumps.MenuItem(
-                    entry["name"], callback=a.make_launch_proxied(entry))
-                _apply_icon(item, "launch")
+                    f"{marker}{name}",
+                    callback=a.make_switch_server(t.get("id") or ""))
+                _apply_icon(item, "tunnel_row")
                 sub.add(item)
-            parent.add(sub)
+            self._add_proxied_launches(sub, a)
+            rows.append(sub)
+        else:
+            self._add_proxied_launches(None, a, rows)
 
-        self.refs["group_proxy"] = parent
+        for item in rows:
+            if not item.title or item.title == i18n.t("menu.group.forward")                     or item.title == i18n.t("menu.group.mount"):
+                pass
+            self._app.menu.add(item)
+            if ssh_dim:
+                _set_enabled(item, False)
+
+    def _add_proxied_launches(self, parent, a, top_rows=None):
+        """经代理启动：多服务器时并入「上游服务器」子菜单，单服务器时
+        直挂 SSH 段尾部（重设计：不再占一级组）。"""
+        apps_list = chromium_proxy.installed_apps()
+        if not apps_list:
+            return
+        sub = rumps.MenuItem(i18n.t("proxy.launch_apps"), callback=None)
+        _apply_icon(sub, "launch")
+        for entry in apps_list:
+            item = rumps.MenuItem(
+                entry["name"], callback=a.make_launch_proxied(entry))
+            _apply_icon(item, "launch")
+            sub.add(item)
+        if parent is not None:
+            parent.add(None)
+            parent.add(sub)
+        elif top_rows is not None:
+            top_rows.append(sub)
+
+    # ── AI 合并组（重设计 ④）：路由 + 抓包 ──────────────────
+
+    def _build_ai_submenu(self):
+        """AI ▸ —— AI 工具栈运行物合并组：路由（启停/重启/重载/配置/
+        复制）+ 抓包（启停/目录/JSONL）。高频启停一级，低频动作二级；
+        rollup 聚合路由错误与抓包异常。"""
+        a = self._app
+        st = self._get_state()
+        parent = rumps.MenuItem(i18n.t("menu.group.ai"), callback=None)
+        _apply_icon(parent, "router")
+
+        item = rumps.MenuItem(
+            i18n.t("router.stop" if st.suanpan_running else "router.start"),
+            callback=a.toggle_suanpan)
+        _apply_status_dot(item, "ok" if st.suanpan_running
+                          else ("err" if st.suanpan_error else "idle"),
+                          point_size=9)
+        parent.add(item)
+        if st.suanpan_running:
+            item = rumps.MenuItem(i18n.t("router.restart"),
+                                  callback=a.restart_suanpan)
+            _apply_icon(item, "cycle")
+            parent.add(item)
+            item = rumps.MenuItem(i18n.t("router.reload"),
+                                  callback=a.reload_suanpan)
+            _apply_icon(item, "refresh")
+            parent.add(item)
+        item = rumps.MenuItem(i18n.t("router.setup_agent"),
+                              callback=a.show_agent_setup)
+        _apply_icon(item, "wand.and.stars")
+        parent.add(item)
+        item = rumps.MenuItem(i18n.t("router.copy_url"),
+                              callback=a.copy_suanpan_url)
+        _apply_icon(item, "doc")
+        parent.add(item)
+
+        parent.add(None)
+        item = rumps.MenuItem(
+            i18n.t("capture.stop" if st.capture_enabled else "capture.start"),
+            callback=a.toggle_capture, key="m")
+        _apply_status_dot(item, st.capture_state, point_size=9)
+        parent.add(item)
+        if st.capture_hint:
+            parent.add(rumps.MenuItem(st.capture_hint, callback=None))
+        item = rumps.MenuItem(i18n.t("capture.open_dir"),
+                              callback=a.open_capture_dir)
+        _apply_icon(item, "folder")
+        parent.add(item)
+        item = rumps.MenuItem(i18n.t("capture.today_jsonl"),
+                              callback=a.open_today_jsonl)
+        _apply_icon(item, "jsonl")
+        parent.add(item)
+
+        self.refs["group_ai"] = parent
         return parent
 
     def _build_forward_submenu(self):
@@ -741,135 +866,12 @@ class MenuBuilder:
                     action.title = new_title
                     _apply_icon(action, "fw_stop" if active else "fw_start")
 
-    def _build_vpn_submenu(self):
-        """VPN 网络 ▸ —— 全局单连接（spec §5.3）：一行动词 + 状态点 +
-        行尾状态词（A 类语法）；未配置时点击打开设置窗。"""
-        st = self._get_state()
-        a = self._app
-        parent = rumps.MenuItem(i18n.t("menu.group.vpn"), callback=None)
-        _apply_icon(parent, "shield")
-        self.refs["group_vpn"] = parent
 
-        active = st.vpn_status in ("connecting", "connected", "reconnecting")
-        verb = i18n.t("vpn.disconnect" if active else "vpn.connect")
-        target = _truncate(st.vpn_server, 24) if st.vpn_server else ""
-        kind, key = _VPN_TAIL.get(st.vpn_status, ("idle", "vpn.tail.idle"))
-        item = rumps.MenuItem(f"{verb} {target} · {i18n.t(key)}".strip(),
-                              callback=a.toggle_vpn)
-        _apply_status_dot(item, kind, point_size=10)
-        parent.add(item)
 
-        if st.vpn_status == "error" and st.vpn_error:
-            parent.add(rumps.MenuItem(
-                f"  {_truncate(st.vpn_error, 60)}", callback=None))
-        return parent
-
-    def _build_capture_submenu(self):
-        a = self._app
-        st = self._get_state()
-        parent = rumps.MenuItem(i18n.t("menu.group.capture"), callback=None)
-        _apply_icon(parent, "capture")
-        # A 类状态语法：标题=纯动作（启动/停止抓包），状态进点
-        # （绿=运行/黄=启动中/黑=已停止/红=异常），引导与详情进 hint 行
-        item = rumps.MenuItem(
-            i18n.t("capture.stop" if st.capture_enabled else "capture.start"),
-            callback=a.toggle_capture, key="m")
-        _apply_status_dot(item, st.capture_state, point_size=9)
-        parent.add(item)
-        if st.capture_hint:
-            parent.add(rumps.MenuItem(st.capture_hint, callback=None))
-        parent.add(None)
-        item = rumps.MenuItem(i18n.t("capture.open_dir"),
-                              callback=a.open_capture_dir)
-        _apply_icon(item, "folder")
-        parent.add(item)
-        item = rumps.MenuItem(i18n.t("capture.today_jsonl"),
-                              callback=a.open_today_jsonl)
-        _apply_icon(item, "jsonl")
-        parent.add(item)
-        self.refs["group_capture"] = parent
-        return parent
-
-    def _build_suanpan_submenu(self):
-        a = self._app
-        st = self._get_state()
-        parent = rumps.MenuItem(i18n.t("menu.group.router"), callback=None)
-        _apply_icon(parent, "router")
-        # A 类状态语法：标题=动作，状态点=现状（绿=运行/黑=已停止/
-        # 红=启动失败——结构性动作行随运行态出现，状态不再藏在结构里）
-        item = rumps.MenuItem(
-            i18n.t("router.stop" if st.suanpan_running else "router.start"),
-            callback=a.toggle_suanpan)
-        _apply_status_dot(item, "ok" if st.suanpan_running
-                          else ("err" if st.suanpan_error else "idle"),
-                          point_size=9)
-        parent.add(item)
-        if st.suanpan_running:
-            item = rumps.MenuItem(i18n.t("router.restart"),
-                                  callback=a.restart_suanpan)
-            _apply_icon(item, "cycle")
-            parent.add(item)
-            item = rumps.MenuItem(i18n.t("router.reload"),
-                                  callback=a.reload_suanpan)
-            _apply_icon(item, "refresh")
-            parent.add(item)
-        parent.add(None)
-        item = rumps.MenuItem(i18n.t("router.setup_agent"),
-                              callback=a.show_agent_setup)
-        _apply_icon(item, "wand.and.stars")
-        parent.add(item)
-        item = rumps.MenuItem(i18n.t("router.copy_url"),
-                              callback=a.copy_suanpan_url)
-        _apply_icon(item, "doc")
-        parent.add(item)
-        item = rumps.MenuItem(i18n.t("router.copy_example"),
-                              callback=a.copy_suanpan_example)
-        _apply_icon(item, "clipboard")
-        parent.add(item)
-        self.refs["group_router"] = parent
-        return parent
-
-    def _build_system_submenu(self):
-        """选 项 ▸ —— B 类设置（防睡眠 / 登录启动 / 配置 API / 语言）。
-
-        状态语法：设置用 macOS 母语 ✓（NSMenuItem.state），标题保持
-        中性名词——「防睡眠 ✓」即当前值，点按即切换；不染运行色
-        （「防睡眠开着」不是一种「运行」）。一次声明成表。"""
-        a = self._app
-        st = self._get_state()
-        parent = rumps.MenuItem(i18n.t("menu.group.system"), callback=None)
-        _apply_icon(parent, "system")
-        for ref_key, label_key, cfg_key, callback, shortcut, icon in (
-                ("prevent_sleep", "system.prevent_sleep", "prevent_sleep",
-                 a.toggle_prevent_sleep, "n", "sleep"),
-                ("launch_login", "system.launch_login", "launch_at_login",
-                 a.toggle_launch_at_login, "k", "login"),
-                ("config_api", "system.config_api", "config_api_enabled",
-                 a.toggle_config_api, None, "network")):
-            item = rumps.MenuItem(i18n.t(label_key), callback=callback,
-                                  key=shortcut)
-            _apply_icon(item, icon)
-            _apply_check(item, bool(st.config.get(cfg_key)))
-            self.refs[ref_key] = item
-            parent.add(item)
-        # 语言子菜单（ADR-012）：✓ 跟随磁盘偏好值（auto 也是一等选项）；
-        # 写径 make_set_language → update_mp → _apply_language + struct_key
-        # 既有机制整树重建换文案
-        parent.add(None)
-        lang_sub = rumps.MenuItem(i18n.t("system.language"), callback=None)
-        _apply_icon(lang_sub, "globe")
-        pref = st.config.get("language") or i18n.DEFAULT_LANGUAGE
-        for value, key in ((i18n.AUTO, "system.language.auto"),
-                           ("zh-CN", "system.language.zh"),
-                           ("en", "system.language.en")):
-            item = rumps.MenuItem(i18n.t(key),
-                                  callback=a.make_set_language(value))
-            _apply_check(item, pref == value)
-            lang_sub.add(item)
-        parent.add(lang_sub)
-        return parent
 
     def _build_footer(self):
+        """尾部（重设计 ⑤）：偏好/日志/指令 + 高频开关直陈（防睡眠/
+        登录启动，B 类 ✓）；配置 API 与语言退役进设置窗（均有 UI 入口）。"""
         app = self._app
         a = self._app
         item = rumps.MenuItem(i18n.t("footer.preferences"),
@@ -884,6 +886,16 @@ class MenuBuilder:
                               callback=a.copy_agent_instructions)
         _apply_icon(item, "clipboard")
         app.menu.add(item)
+        for ref_key, label_key, cfg_key, callback, icon in (
+                ("prevent_sleep", "system.prevent_sleep", "prevent_sleep",
+                 a.toggle_prevent_sleep, "sleep"),
+                ("launch_login", "system.launch_login", "launch_at_login",
+                 a.toggle_launch_at_login, "login")):
+            item = rumps.MenuItem(i18n.t(label_key), callback=callback)
+            _apply_icon(item, icon)
+            _apply_check(item, bool(self._get_state().config.get(cfg_key)))
+            self.refs[ref_key] = item
+            app.menu.add(item)
         app.menu.add(None)
         item = rumps.MenuItem(i18n.t("footer.about"), callback=a.about)
         _apply_icon(item, "about")
@@ -905,18 +917,18 @@ class MenuBuilder:
 
         # Proxy status line —— 颜色由行首圆点图标承载（emoji 已退役）
         if st.paused:
-            proxy_text = i18n.t("status.proxy.paused", name=tunnel_name)
+            proxy_text = i18n.t("status.ssh.paused", name=tunnel_name)
         elif s == "connected":
-            proxy_text = f"AI Proxy · {tunnel_name}"
+            proxy_text = i18n.t("status.ssh.connected", name=tunnel_name)
         elif s == "connecting":
-            proxy_text = i18n.t("status.proxy.connecting", name=tunnel_name)
+            proxy_text = i18n.t("status.ssh.connecting", name=tunnel_name)
         elif s == "error":
-            proxy_text = i18n.t("status.proxy.failed", name=tunnel_name)
+            proxy_text = i18n.t("status.ssh.failed", name=tunnel_name)
         elif tunnel:
             # 断开也保留隧道名——此刻恰恰更需要知道当前配的是谁
-            proxy_text = i18n.t("status.proxy.disconnected", name=tunnel_name)
+            proxy_text = i18n.t("status.ssh.disconnected", name=tunnel_name)
         else:
-            proxy_text = "AI Proxy"
+            proxy_text = i18n.t("status.ssh.unconfigured")
         # 多活：转发会话在跑时状态行附转发计数（主图标语义不变——只反映
         # 代理会话，:8888 上游只依赖它）；分隔符全菜单统一「·」
         fw_up = sum(1 for f in (st.forward_states or ())
@@ -940,12 +952,32 @@ class MenuBuilder:
         # Router status line —— 原始错误串不进菜单（截断读不完也无法
         # 复制）；短状态 + 详情走日志窗
         if st.suanpan_running:
-            router_text = f"AI Router · {st.suanpan_listen_address}"
+            router_text = f"Router · {st.suanpan_listen_address}"
         elif st.suanpan_error:
             router_text = i18n.t("status.router.failed")
         else:
-            router_text = "AI Router"
+            router_text = "Router"
         self._set_title("router_status", router_text)
+
+        # VPN status line（重设计 ①：与 SSH 行同框，互斥现状一眼可见）
+        if st.vpn_status == "connected":
+            vpn_text = i18n.t("status.vpn.connected",
+                              ip=st.vpn_tun_ip or "")
+        elif st.vpn_status == "connecting":
+            vpn_text = i18n.t("status.vpn.connecting")
+        elif st.vpn_status == "reconnecting":
+            vpn_text = i18n.t("status.vpn.reconnecting")
+        elif st.vpn_status == "error":
+            vpn_text = i18n.t("status.vpn.error")
+        else:
+            vpn_text = i18n.t("status.vpn.idle")
+        self._set_title("vpn_status", vpn_text)
+        vpn_row = self.refs.get("vpn_status")
+        if vpn_row is not None:
+            dot = {"connected": "ok", "connecting": "warn",
+                   "reconnecting": "warn", "error": "err"}.get(
+                       st.vpn_status, "idle")
+            _apply_status_dot(vpn_row, dot, point_size=10)
 
         # Traffic line —— 方向箭头由行首图标承载
         if "traffic" in self.refs:
@@ -959,8 +991,7 @@ class MenuBuilder:
 
         # B 类设置：原生 ✓ 随磁盘真相收敛（标题中性名词不变）
         for ref_key, cfg_key in (("prevent_sleep", "prevent_sleep"),
-                                 ("launch_login", "launch_at_login"),
-                                 ("config_api", "config_api_enabled")):
+                                 ("launch_login", "launch_at_login")):
             _apply_check(self.refs.get(ref_key),
                          bool(st.config.get(cfg_key)))
 
@@ -976,16 +1007,11 @@ class MenuBuilder:
         计数与状态行 ⚠ 计数经 _error_counts 同源。"""
         fw_bad, mounts_bad = _error_counts(st)
         rollups = (
-            ("group_proxy", "menu.group.proxy",
-             1 if st.ssh_status == "error" else 0),
             ("group_forward", "menu.group.forward", fw_bad),
             ("group_mount", "menu.group.mount", mounts_bad),
-            ("group_vpn", "menu.group.vpn",
-             1 if st.vpn_status == "error" else 0),
-            ("group_router", "menu.group.router",
-             1 if st.suanpan_error else 0),
-            ("group_capture", "menu.group.capture",
-             1 if st.capture_state == "err" else 0),
+            ("group_ai", "menu.group.ai",
+             (1 if st.suanpan_error else 0)
+             + (1 if st.capture_state == "err" else 0)),
         )
         for ref_key, base_key, bad in rollups:
             base = i18n.t(base_key)

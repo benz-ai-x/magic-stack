@@ -236,7 +236,7 @@ suanpan/ ── AI 路由网关子包（ADR-010 三协议入站：Anthropic Mess
 
 **线程模型：** 主线程跑 rumps NSRunLoop（菜单栏）。后台 daemon 线程跑：asyncio 事件循环（代理服务 ProxyRuntime）、Suanpan 网关（uvicorn）、config server（http.server）。
 
-**菜单：** 七组结构（状态区 / 代 理 / 端口映射 / 远程挂载 / VPN 网络 / AI 路由 / 抓 包 / 选 项 ＋ 页脚）以 `shellui/menu_builder.py` 为准；**菜单状态语法**（A 类运行物 = 动词标题 + 状态点四值 + 状态词；B 类设置 = 中性名词 + 原生 ✓；组标题仅异常挂 ⚠；状态圆点为手绘位图）见 `CONTEXT.md`「菜单状态语法」；菜单项图标走 SF Symbols（旧系统静默降级）
+**菜单：** 四段结构（状态总览[SSH/VPN/Router 三行同框] → 接入模式[SSH/VPN 互斥单选，点选即切换] → SSH 模式段[VPN 模式时整段置灰：会话控制/系统代理✓/端口映射/远程挂载/多服务器时的上游子菜单] → AI ▸[路由+抓包合并] ＋ 尾部[偏好/日志/指令/防睡眠✓/登录启动✓]；配置 API 与语言退役进设置窗）以 `shellui/menu_builder.py` 为准（2026-09-27 重设计，原型 docs/prototypes/menu-redesign.html）；**菜单状态语法**（A 类运行物 = 动词标题 + 状态点四值 + 状态词；B 类设置 = 中性名词 + 原生 ✓；组标题仅异常挂 ⚠；状态圆点为手绘位图）见 `CONTEXT.md`「菜单状态语法」；菜单项图标走 SF Symbols（旧系统静默降级）
 
 **偏好设置：** 菜单「偏好设置…」打开 WKWebView 窗口（`http://127.0.0.1:9528/`）。侧边栏分组：代理（服务器（单视图：连接/端口映射/NFS/OpenVPN 横向 tab）/ 网络设置）+ AI 路由（快速接入 / 供应商 / Claude Code 同步 / 运行统计 / 余额速览）+ 系统（系统选项）。同一页面可浏览器直开（输 token 登录）——依赖原生 bridge 的操作在该场景逐项降级（重连/转发启停给 toast 提示；「复制 AI 助手指令」经认证 `GET /api/agent-instructions` 回退）。:9528 生命周期（ADR-009）：默认**不常驻**——三持有者（设置窗开着 / 复制指令会话闩锁 / `config_api_enabled` 常驻开关）任一在场才监听（细节见 `CONTEXT.md`「服务生命周期」）。
 

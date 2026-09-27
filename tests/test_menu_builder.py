@@ -55,7 +55,7 @@ class TestStateGrammar(unittest.TestCase):
     def test_router_toggle_title_follows_running(self):
         mb = self._build(_state(suanpan_running=True,
                                 suanpan_listen_address="127.0.0.1:9527"))
-        titles = [i.title for i in mb.refs["group_router"].values()
+        titles = [i.title for i in mb.refs["group_ai"].values()
                   if hasattr(i, "title")]
         self.assertIn("停止路由", titles)
         self.assertNotIn("启动路由", titles)
@@ -64,13 +64,13 @@ class TestStateGrammar(unittest.TestCase):
         mb = self._build(_state(
             capture_enabled=False, capture_state="idle",
             capture_hint="  首次抓包需先信任本地根 CA——启动后按引导操作"))
-        titles = [i.title for i in mb.refs["group_capture"].values()
+        titles = [i.title for i in mb.refs["group_ai"].values()
                   if hasattr(i, "title")]
         self.assertIn("启动抓包", titles)          # 标题=纯动作
         self.assertNotIn("（需先信任证书）", titles[0])  # 状态/引导不进标题
         self.assertTrue(any("首次抓包" in t for t in titles))  # hint 行
         mb2 = self._build(_state(capture_enabled=True, capture_state="ok"))
-        titles2 = [i.title for i in mb2.refs["group_capture"].values()
+        titles2 = [i.title for i in mb2.refs["group_ai"].values()
                    if hasattr(i, "title")]
         self.assertIn("停止抓包", titles2)
 
@@ -80,11 +80,10 @@ class TestStateGrammar(unittest.TestCase):
             forward_states=(ForwardState("t-2", "AWS-ap", "connected"),),
             mount_states=(MountState("t-1", "a", "data", "mounted", ""),),
             suanpan_running=True))
-        self.assertEqual(mb.refs["group_proxy"].title, "代 理")
+        # 重设计后组标题只剩三枚（端口映射/挂载/AI——SSH 段无组标题）
         self.assertEqual(mb.refs["group_forward"].title, "端口映射")
         self.assertEqual(mb.refs["group_mount"].title, "远程挂载")
-        self.assertEqual(mb.refs["group_router"].title, "AI 路由")
-        self.assertEqual(mb.refs["group_capture"].title, "抓 包")
+        self.assertEqual(mb.refs["group_ai"].title, "AI")
 
     def test_group_rollup_marks_errors(self):
         mb = self._build(_state(
@@ -93,11 +92,10 @@ class TestStateGrammar(unittest.TestCase):
             mount_states=(MountState("t-1", "a", "data", "error", "x"),
                           MountState("t-1", "a", "ws", "error", "y")),
             suanpan_error="dep missing", capture_state="err"))
-        self.assertEqual(mb.refs["group_proxy"].title, "代 理 ⚠ 1")
         self.assertEqual(mb.refs["group_forward"].title, "端口映射 ⚠ 1")
         self.assertEqual(mb.refs["group_mount"].title, "远程挂载 ⚠ 2")
-        self.assertEqual(mb.refs["group_router"].title, "AI 路由 ⚠ 1")
-        self.assertEqual(mb.refs["group_capture"].title, "抓 包 ⚠ 1")
+        # AI 合并组：路由错误与抓包异常聚合计数
+        self.assertEqual(mb.refs["group_ai"].title, "AI ⚠ 2")
 
     def test_status_line_uses_unified_separator(self):
         mb = self._build(_state(
@@ -162,28 +160,43 @@ class TestMultiActiveTunnels(unittest.TestCase):
             mb = MenuBuilder(app, lambda: _state(
                 ssh_status=ssh_status, config=cfg or self._cfg(),
                 forward_states=forward_states))
-            builder = {"代 理": mb._build_proxy_submenu,
-                       "端口映射": mb._build_forward_submenu,
-                       "选 项": mb._build_system_submenu}[title]
+            builder = {"端口映射": mb._build_forward_submenu,
+                       "AI": mb._build_ai_submenu}[title]
             parent = builder()
         self._mb = mb
         rows = list(parent.values())
         self._titles = [r.title for r in rows if hasattr(r, "title")]
         return parent, [r for r in rows if hasattr(r, "values")]
 
-    def test_proxy_submenu_structure(self):
-        parent, subs = self._submenu("代 理")
-        titles = self._titles
-        self.assertIn("停止代理", titles)          # connected 语境（原「暂停代理」，2026-09-27 用户裁决改停止语义）
+    def test_ssh_section_structure(self):
+        """SSH 段（重设计 ③）：停止/重连/系统代理（B 类 ✓）+ 端口映射/
+        挂载组；多服务器 → 「上游服务器」子菜单（单选 ✓ + 经代理启动并入）。"""
+        app = MagicMock()
+        added = []
+        app.menu.add.side_effect = lambda i: added.append(i)
+        with unittest.mock.patch(
+                "shellui.menu_builder.chromium_proxy.installed_apps",
+                return_value=[{"name": "ChatGPT"}]):
+            mb = MenuBuilder(app, lambda: _state(
+                ssh_status="connected", config=self._cfg()))
+            mb._build_ssh_section()
+        titles = [i.title for i in added if hasattr(i, "title")]
+        self.assertIn("停止代理", titles)
         self.assertIn("重新连接", titles)
-        self.assertIn("开启系统代理", titles)       # 动词式开关
-        self.assertIn("代理服务器（本地代理的上游）", titles)
-        self.assertIn("✓ Aws-eu", titles)          # 角色单选：当前打 ✓
-        self.assertIn("AWS-ap", titles)
-        launch = [t for t in titles if t == "经代理启动 App"]
-        self.assertEqual(len(launch), 1)
-        launch_rows = [s for s in subs if s.title == "经代理启动 App"]
-        self.assertIn("ChatGPT", [i.title for i in list(launch_rows[0].values())])
+        self.assertIn("系统代理", titles)           # B 类中性名词
+        self.assertIn("端口映射", titles)
+        self.assertIn("远程挂载", titles)
+        upstream = next(i for i in added if hasattr(i, "title")
+                        and "上游" in i.title)   # 「代理服务器（…上游…）」
+        sub_titles = [r.title for r in upstream.values()
+                      if hasattr(r, "title")]
+        self.assertIn("✓ Aws-eu", sub_titles)
+        self.assertIn("AWS-ap", sub_titles)
+        launches = [r for r in upstream.values() if hasattr(r, "values")]
+        self.assertTrue(any(
+            "ChatGPT" in [x.title for x in list(l.values())
+                          if hasattr(x, "title")] for l in launches))
+        self.assertEqual(mb.refs["sys_proxy_check"]._menuitem.state(), 0)
 
     def test_forward_submenu_structure(self):
         parent, subs = self._submenu(
@@ -260,31 +273,47 @@ class TestMultiActiveTunnels(unittest.TestCase):
         self.assertIn("Aws-eu — 随代理运行 · 启停将重启代理", titles)
         self.assertIn("7001 → 71 · 已映射", titles)
 
-    def test_system_submenu_uses_native_checks(self):
-        """B 类设置：中性名词标题 + 原生 ✓（NSMenuItem.state）——
-        状态用母语表达，不染运行色。语言子菜单（ADR-012）随组尾。"""
-        self._submenu("选 项", cfg={"prevent_sleep": True,
-                                    "launch_at_login": False,
-                                    "config_api_enabled": True,
-                                    "servers": []})
-        titles = self._titles
-        self.assertEqual(titles, ["防睡眠", "登录启动", "配置 API 服务", "语言"])
-        mb = self._mb
+    def test_footer_carries_high_freq_checks(self):
+        """尾部收编（重设计 ⑤）：防睡眠/登录启动直陈尾部（原生 ✓）；
+        配置 API 与语言退役（设置窗已有入口——系统选项页两开关均在）。"""
+        app = MagicMock()
+        added = []
+        app.menu.add.side_effect = lambda i: added.append(i)
+        mb = MenuBuilder(app, lambda: _state(config={
+            "prevent_sleep": True, "launch_at_login": False,
+            "config_api_enabled": True, "servers": []}))
+        mb._build_footer()
+        titles = [i.title for i in added if hasattr(i, "title")]
+        self.assertIn("防睡眠", titles)
+        self.assertIn("登录启动", titles)
+        self.assertNotIn("配置 API 服务", titles)   # 退役进设置窗
+        self.assertNotIn("语言", titles)
         self.assertEqual(mb.refs["prevent_sleep"]._menuitem.state(), 1)
         self.assertEqual(mb.refs["launch_login"]._menuitem.state(), 0)
-        self.assertEqual(mb.refs["config_api"]._menuitem.state(), 1)
 
-    def test_language_submenu_marks_current_preference(self):
-        """选项 ▸「语言」：✓ 跟随磁盘偏好值（auto 是一等选项）。"""
-        parent, _ = self._submenu("选 项", cfg={"servers": [],
-                                                "language": "en"})
-        lang_sub = [r for r in parent.values()
-                    if getattr(r, "title", "") == "语言"][0]
-        states = {r.title: r._menuitem.state()
-                  for r in lang_sub.values() if hasattr(r, "_menuitem")}
-        self.assertEqual(states["English"], 1)
-        self.assertEqual(states["自动（跟随系统）"], 0)
-        self.assertEqual(states["简体中文"], 0)
+    def test_mode_section_exclusive_selection(self):
+        """接入模式段（重设计 ②）：互斥单选 ✓；VPN 激活时反转 + 多出
+        「断开 VPN」行。"""
+        app = MagicMock()
+        added = []
+        app.menu.add.side_effect = lambda i: added.append(i)
+        mb = MenuBuilder(app, lambda: _state())
+        mb._build_mode_section()
+        rows = [i for i in added if hasattr(i, "title")]
+        states = {r.title: r._menuitem.state() for r in rows[1:]}
+        self.assertEqual(rows[0].title, "接入模式")
+        self.assertEqual(states["SSH 隧道（代理 + 转发 + 挂载）"], 1)
+        self.assertEqual(states["VPN（OpenVPN 全隧道）"], 0)
+        self.assertEqual(len(rows), 3)             # 无断开行（VPN 未激活）
+
+        added.clear()
+        mb2 = MenuBuilder(app, lambda: _state(vpn_status="connected"))
+        mb2._build_mode_section()
+        rows2 = [i for i in added if hasattr(i, "title")]
+        states2 = {r.title: r._menuitem.state() for r in rows2[1:]}
+        self.assertEqual(states2["SSH 隧道（代理 + 转发 + 挂载）"], 0)
+        self.assertEqual(states2["VPN（OpenVPN 全隧道）"], 1)
+        self.assertTrue(any("断开 VPN" in r.title for r in rows2))
 
     def test_status_line_appends_forward_count(self):
         mb = MenuBuilder(MagicMock(), lambda: _state(

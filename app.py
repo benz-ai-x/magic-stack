@@ -387,6 +387,9 @@ class MagicProxyApp(rumps.App):
             vpn_error=(getattr(self, "_vpn_client").vpn.error_kind
                        if getattr(self, "_vpn_client", None) is not None
                        else ""),
+            vpn_tun_ip=(getattr(self, "_vpn_client").vpn.tun_ip
+                        if getattr(self, "_vpn_client", None) is not None
+                        else ""),
         )
 
     # ── VPN（M2 接线，spec §3.3/§7.2）────────────────────
@@ -527,6 +530,29 @@ class MagicProxyApp(rumps.App):
             if not ok:
                 return
         self._intents.vpn_connect(server)
+
+    def switch_mode_ssh(self, _item):
+        """模式段：切回 SSH 隧道模式（菜单重设计 ②）。VPN 激活时原生
+        确认 → 断 VPN → 恢复 SSH 会话与挂载（显式切换 = 主动恢复；
+        被动断开仍不回切——ADR-011 语义不变）。已是 SSH 模式 = 无操作
+        （单选语义）。"""
+        client = self._vpn_client
+        vpn_active = client is not None and client.vpn.status in (
+            "connecting", "connected", "reconnecting")
+        if not vpn_active:
+            return
+        logger.info("mode switch to ssh: confirming")
+        ok = rumps.alert(
+            "Magic Stack",
+            i18n.t("mode.ssh_confirm_title"),
+            i18n.t("mode.ssh_confirm_body"),
+            ok=i18n.t("mode.switch_ok"))
+        if not ok:
+            return
+        self._intents.vpn_disconnect()
+        self._conn.start()
+        self._conn.apply_autostarts()
+        self._mounts.apply_autostarts()
 
     def _vpn_startup_reconcile(self):
         """启动期收养（spec §5.4 落地到生命周期）：残留 root openvpn
