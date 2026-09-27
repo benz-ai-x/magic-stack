@@ -505,7 +505,9 @@ class MagicProxyApp(rumps.App):
                      text or "")
 
     def toggle_vpn(self, _item):
-        """菜单「连接/断开 VPN」：状态推导动作（A 类动词语义）。"""
+        """菜单「连接/断开 VPN」：状态推导动作（A 类动词语法）。
+        SSH 活跃时不再踢去设置窗（真机反馈的死胡同）——原生确认框
+        一步到位：确认即拆屏障连接。"""
         client = self._vpn_client
         if client is not None and client.vpn.status in (
                 "connecting", "connected", "reconnecting"):
@@ -516,9 +518,14 @@ class MagicProxyApp(rumps.App):
             self.show_preferences(None)
             return
         if self._ssh_any_active():
-            self._notify(i18n.t("notify.vpn.ssh_active"),
-                         i18n.t("notify.vpn.ssh_active_body"))
-            return
+            logger.info("vpn menu connect: ssh active, confirming")
+            ok = rumps.alert(
+                "Magic Stack",
+                i18n.t("notify.vpn.ssh_active"),
+                i18n.t("notify.vpn.ssh_active_body_force"),
+                ok=i18n.t("vpn.confirm_ok"))
+            if not ok:
+                return
         self._intents.vpn_connect(server)
 
     def _vpn_startup_reconcile(self):
