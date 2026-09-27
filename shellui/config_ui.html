@@ -1725,9 +1725,20 @@ async function vpnImport(btn){
   const inp=document.querySelector('[data-vp="file"]');
   const f=inp&&inp.files&&inp.files[0];
   if(!f){toast(tt('ui.vpn.pick_file'),true);return;}
-  const orig=btn.textContent;btn.disabled=true;btn.textContent=tt('ui.vpn.importing');
+  const content=await f.text();
+  return vpnImportContent(btn,content);
+}
+// 原生 WKWebView 的自愈入口：file input 的 completion block 在 PyObjC
+// 下可能无法调用——原生侧读文件内容直接喂进来（与 FileReader 同一核心）
+window.vpnFileDelivered=function(content){return vpnImportContent(null,content);};
+async function vpnImportContent(btn,content){
+  collectServers();
+  const ts=S.mp.servers||[],i=activeTunnel;
+  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
+  if(!content||!content.trim()){toast(tt('ui.vpn.pick_file'),true);return;}
+  const orig=btn?btn.textContent:null;
+  if(btn){btn.disabled=true;btn.textContent=tt('ui.vpn.importing');}
   try{
-    const content=await f.text();
     const r=await fetch('/api/vpn-profile',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,content})});
     const d=await r.json();
     if(!d.ok){_setProbeResult('vpn-state','❌ '+(d.error||tt('ui.vpn.import_failed')),'var(--danger)');return;}
@@ -1740,7 +1751,7 @@ async function vpnImport(btn){
     _setProbeResult('vpn-state','✅ '+tt('ui.vpn.imported')+(notes.length?'\n'+notes.join('\n'):''),'var(--ok)');
     recomputeDirty();renderView();
   }catch(e){_setProbeResult('vpn-state','❌ '+tt('ui.vpn.import_failed'),'var(--danger)');}
-  finally{btn.disabled=false;btn.textContent=orig;renderView();}
+  finally{if(btn){btn.disabled=false;btn.textContent=orig;renderView();}}
 }
 async function vpnSavePw(btn){
   collectServers();

@@ -17,6 +17,7 @@ app.py's import chain) never fails in headless/test environments where the
 WebKit framework is not loaded.
 """
 import logging
+import json
 import os
 
 import objc
@@ -51,6 +52,25 @@ def _ensure_webkit():
             "/System/Library/Frameworks/WebKit.framework").load()
         _WEBKIT_LOADED = True
     return objc.lookUpClass("WKWebView")
+
+
+def _invoke_open_panel_completion(completion, urls):
+    """按显式签名调用 WebKit 的 completion block（PyObjC 对无签名元数据
+    的 block 没有公开调用面——_block_call 是唯一通道；两种签名约定都试：
+    含/不含 block 自身隐参）。失败返回 False，调用方走自愈路径。"""
+    import objc
+    attempts = ((b"v@@", (urls, None)),
+                (b"v@?@@", (completion, urls, None)))
+    for sig, args in attempts:
+        try:
+            objc._block_call(completion, sig, args, {})
+            return True
+        except (TypeError, ValueError):
+            continue
+        except Exception:
+            logger.exception("open panel completion call failed")
+            return False
+    return False
 
 
 class _ConfigWindowDelegate(NSObject):
@@ -135,7 +155,10 @@ class _ConfigWindowDelegate(NSObject):
     # WKUIDelegate —— HTML <input type="file"> 的系统文件面板（M2 VPN
     # 导入）。WKWebView 未设 UIDelegate 时点击 file input 静默无反应
     # （真机坑：桥接式 SSH 密钥选择能用，因为走 showOpenPanelFill_ 原
-    # 生路径，不经 HTML input）。completionHandler 每条路径恰调一次。
+    # 生路径，不经 HTML input）。completion block 无签名元数据——经
+    # _invoke_open_panel_completion 显式签名调用；block 调用失败时走
+    # 自愈：原生读文件内容直接喂给页面（vpnFileDelivered），用户流不因
+    # PyObjC 的 block 限制而断。
     def webView_runOpenPanelWithParameters_initiatedByFrame_completionHandler_(
             self, _webview, parameters, _frame, completion):
         try:
@@ -147,16 +170,22 @@ class _ConfigWindowDelegate(NSObject):
             except Exception:
                 multiple = False
             panel.setAllowsMultipleSelection_(multiple)
-            if panel.runModal() == 1:
-                completion(panel.URLs(), None)
-            else:
-                completion(None, None)
+            ok = panel.runModal() == 1
+            picked = panel.URLs() if ok else None
+            if _invoke_open_panel_completion(completion, picked):
+                return
+            if ok and picked:
+                url = picked[0]
+                try:
+                    content = open(url.path(), encoding="utf-8",
+                                   errors="replace").read()
+                    if _webview:
+                        _webview.evaluateJavaScript_completionHandler_(
+                            f"vpnFileDelivered({json.dumps(content)})", None)
+                except Exception:
+                    logger.exception("vpn file fallback delivery failed")
         except Exception:
             logger.exception("web file picker failed")
-            try:
-                completion(None, None)
-            except Exception:
-                pass
 
 
 def show_config_window(url, title="Magic Stack 设置", on_action=None,
