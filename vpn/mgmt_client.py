@@ -194,17 +194,20 @@ class ManagementClient:
             if not chunk:
                 raise ManagementError("management closed during handshake")
             buf += chunk
+            # 密码提示符 **不带换行**（openvpn 源码实测：行导向解析永远
+            # 等不到这一「行」→ 密码不发 → 5s 超时断连——真机教训）
+            if not sent_password and b"ENTER PASSWORD:" in buf:
+                if not self._password:
+                    raise ManagementError(
+                        "management requires a password, none configured")
+                sent_password = True
+                buf = buf.split(b"ENTER PASSWORD:", 1)[1]
+                sock.sendall(self._password.encode("utf-8") + b"\n")
             while b"\n" in buf and not deadline_ok:
                 line, buf = buf.split(b"\n", 1)
                 text = line.decode("utf-8", "replace").rstrip("\r")
                 if text.startswith(">INFO:"):
                     deadline_ok = True
-                elif text == "ENTER PASSWORD:" and not sent_password:
-                    if not self._password:
-                        raise ManagementError(
-                            "management requires a password, none configured")
-                    sent_password = True
-                    sock.sendall(self._password.encode("utf-8") + b"\n")
                 elif text.startswith("ERROR:"):
                     # 密码错等服务端断开/超时；这里只记录
                     logger.warning("management handshake error line: %s", text)

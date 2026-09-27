@@ -62,6 +62,26 @@ def classify_log(text: str) -> str:
     return ""
 
 
+def adopt_stale_openvpn(mgmt_password, port, *, timeout=2.0):
+    """孤儿收养原语（spec §5.4）：固定管理口上的残留 root openvpn →
+    经管理口 SIGTERM 优雅收尸。sudo 之下的 root openvpn 不随 sudo 死——
+    process.terminate 只杀得到 sudo，孤儿会永远占住管理口（真机教训：
+    一次 attach 失败后所有后续连接全撞死在端口占用）。
+    无孤儿/不可达/密码不符 → False；已发送 SIGTERM → True。绝不抛。"""
+    try:
+        client = ManagementClient(password=mgmt_password, handlers={},
+                                  handshake_timeout=timeout)
+        client.connect("127.0.0.1", port)
+        try:
+            client.send_and_wait("signal SIGTERM", timeout=timeout)
+        finally:
+            client.close()
+        logger.info("stale openvpn adopted (SIGTERM via management)")
+        return True
+    except Exception:
+        return False
+
+
 class VpnState:
     """隧道层状态投影（进程层 status 之外的单一真相）。"""
 
@@ -121,15 +141,30 @@ class VpnClient(SubprocessMonitor):
     # ── 启动 / 停止 ──────────────────────────────────────────────
 
     def start(self):
-        """拉子进程 + 后台线程重试连管理口（hold 语义保证事件零丢失）。"""
+        """拉子进程 + 后台线程重试连管理口（hold 语义保证事件零丢失）。
+        起前先收养：管理口若有残留 openvpn（上次异常退出的 root 孤儿）
+        先 SIGTERM 清场，等端口让位再 spawn——否则新进程 bind 失败且
+        死因走 stdout 不可见。"""
         self.stop()
+        # 清场收养（端口空时 connect 立即 refused，零成本）
+        if self._mgmt_password:
+            adopt_stale_openvpn(self._mgmt_password, self._mgmt_port)
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                try:
+                    s = socket.create_connection(
+                        ("127.0.0.1", self._mgmt_port), timeout=0.2)
+                    s.close()
+                    time.sleep(0.3)
+                except OSError:
+                    break
         self._user_stop = False
         self._auth_failures = 0
         self._log_error_kind = ""
         self._fatal_text = ""
         self.vpn = VpnState()
         self.vpn.status = "connecting"
-        if not self._start_process(self._full_cmd):
+        if not self._start_process(self._full_cmd, capture_stdout=True):
             self.vpn.status = "error"
             self.vpn.error_kind = "start_failed"
             self.vpn.error_text = self.error_msg
@@ -187,19 +222,24 @@ class VpnClient(SubprocessMonitor):
             try:
                 client.send_and_wait("signal SIGTERM", timeout=2.0)
             except (ManagementError, OSError):
-                logger.warning("mgmt SIGTERM failed, falling back to process stop")
+                logger.warning("mgmt SIGTERM failed, falling back")
         proc = self.process
         if proc is not None:
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                logger.warning("openvpn did not exit after mgmt SIGTERM")
+                pass
         if client is not None:
             client.close()
         if self.process is not None:
             super().stop()
         else:
             self._status = self._STATUS_STOPPED
+        # 兜底收养：attach 从未成功时（client 为 None）上面的 SIGTERM 不
+        # 可达——sudo 被 terminate 杀掉后 root openvpn 成孤儿继续占管理
+        # 口。收养 SIGTERM 之（幂等：进程已死则连接 refused 直接跳过）。
+        if self._mgmt_password:
+            adopt_stale_openvpn(self._mgmt_password, self._mgmt_port)
         if self.vpn.status != "error":
             self.vpn.status = "stopped"
         self._notify_change()
