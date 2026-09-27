@@ -379,23 +379,29 @@ class MagicProxyApp(rumps.App):
     def _vpn_do_connect(self, server):
         """连接核心（intents 线程纪律：daemon 后台跑）。屏障 = 停全部
         SSH 会话 + 卸载 NFS（互斥粒度共识）；断开不自动回切 SSH。"""
+        logger.info("vpn connect requested: server=%s", server.get("id"))
         binary = vpn_privilege.resolve_openvpn_bin()
         if not binary:
+            logger.warning("vpn connect aborted: openvpn binary missing")
             self._notify(i18n.t("notify.vpn.no_binary"),
                          i18n.t("notify.vpn.no_binary_body"))
             return
         profile_text = vpn_profile_store.load_profile(server.get("id") or "")
         if not profile_text.strip():
+            logger.warning("vpn connect aborted: profile empty (id=%s)",
+                           server.get("id"))
             self._notify(i18n.t("notify.vpn.no_profile"), "")
             return
         svc = server_openvpn(server)
         mgmt_pw = keychain.ensure_vpn_mgmt_password()
         if not vpn_privilege.check_sudoers(binary):
+            logger.info("vpn connect: sudoers missing, installing")
             ok, code = vpn_privilege.install(
                 conf_text=vpn_privilege.runtime_conf(
                     profile_text, pull_dns=svc.get("pull_dns", True)),
                 mgmt_password=mgmt_pw)
             if not ok:
+                logger.warning("vpn connect aborted: install failed (%s)", code)
                 self._notify(
                     i18n.t("notify.vpn.install_failed"),
                     i18n.t(_VPN_INSTALL_ERR_KEYS.get(
@@ -403,6 +409,7 @@ class MagicProxyApp(rumps.App):
                 return
         # 拆除屏障：NFS 先卸（hard 挂载防 Finder 卡死，与退出顺序契约
         # 同理）→ 全部 SSH 会话停
+        logger.info("vpn connect: tearing down SSH barrier")
         self._mounts.unmount_all()
         self._conn.stop_all()
 

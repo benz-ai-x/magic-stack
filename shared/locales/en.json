@@ -696,5 +696,6 @@
   "ui.servers.stop_proxy_aria": "Stop proxy {name}",
   "ui.servers.stop_proxy_title": "Stops all SSH sessions (proxy + port forwards) and unmounts NFS — prepares for connecting VPN; Reconnect restores anytime",
   "ui.bridge.stop_proxy_native_only": "Stop Proxy needs the native settings window (not available in browser mode)",
-  "proxy.stop": "Stop Proxy"
+  "proxy.stop": "Stop Proxy",
+  "ui.vpn.confirm_btn": "Confirm Switch"
 }

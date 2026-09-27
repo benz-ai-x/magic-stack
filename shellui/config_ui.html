@@ -1611,6 +1611,7 @@ function serversHTML(){
                 </div>
               </div>
               <div class="probe-result mono" id="vpn-state"></div>
+              <div class="probe-result mono" id="vpn-feedback"></div>
             </div>
           </div>
         </div>
@@ -1740,16 +1741,16 @@ async function vpnImportContent(btn,content){
   try{
     const r=await fetch('/api/vpn-profile',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,content})});
     const d=await r.json();
-    if(!d.ok){_setProbeResult('vpn-state','❌ '+(d.error||tt('ui.vpn.import_failed')),'var(--danger)');return;}
+    if(!d.ok){_setProbeResult('vpn-feedback','❌ '+(d.error||tt('ui.vpn.import_failed')),'var(--danger)');return;}
     const v=vpnNode(S.mp.servers[i]);
     v.profile_set=true;
     v.auth=d.needs_credentials?'userpass':'none';
     const notes=[];
     if(d.removed&&d.removed.length)notes.push(tt('ui.vpn.sanitized',{n:d.removed.length})+'：'+d.removed.join(', '));
     if(d.missing_client_role)notes.push(tt('ui.vpn.no_client_role'));
-    _setProbeResult('vpn-state','✅ '+tt('ui.vpn.imported')+(notes.length?'\n'+notes.join('\n'):''),'var(--ok)');
+    _setProbeResult('vpn-feedback','✅ '+tt('ui.vpn.imported')+(notes.length?'\n'+notes.join('\n'):''),'var(--ok)');
     recomputeDirty();renderView();
-  }catch(e){_setProbeResult('vpn-state','❌ '+tt('ui.vpn.import_failed'),'var(--danger)');}
+  }catch(e){_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.import_failed'),'var(--danger)');}
   finally{if(btn){btn.disabled=false;btn.textContent=orig;renderView();}}
 }
 async function vpnSavePw(btn){
@@ -1775,20 +1776,20 @@ async function vpnInstall(btn){
   const ts=S.mp.servers||[],i=activeTunnel;
   if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
   const orig=btn.textContent;btn.disabled=true;btn.textContent=tt('ui.vpn.installing');
-  _setProbeResult('vpn-state',tt('ui.vpn.installing_hint'),'var(--muted)');
+  _setProbeResult('vpn-feedback',tt('ui.vpn.installing_hint'),'var(--muted)');
   try{
     const r=await fetch('/api/vpn-install',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i})});
     const d=await r.json();
-    if(d.ok)_setProbeResult('vpn-state','✅ '+tt('ui.vpn.install_ok'),'var(--ok)');
+    if(d.ok)_setProbeResult('vpn-feedback','✅ '+tt('ui.vpn.install_ok'),'var(--ok)');
     else{
       // 错误码分流：缺席二进制（最常见——本机未装）给安装指引，其余如实
       const key=d.error_code==='openvpn_missing'?'vpn.err.no_binary_code'
         :d.error_code==='cancelled'?'ui.vpn.install_cancelled'
         :d.error_code==='sudoers_verify_failed'?'vpn.err.install_verify'
         :'ui.vpn.install_failed';
-      _setProbeResult('vpn-state','❌ '+tt(key),'var(--danger)');
+      _setProbeResult('vpn-feedback','❌ '+tt(key),'var(--danger)');
     }
-  }catch(e){_setProbeResult('vpn-state','❌ '+tt('ui.vpn.install_failed'),'var(--danger)');}
+  }catch(e){_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.install_failed'),'var(--danger)');}
   finally{btn.disabled=false;btn.textContent=orig;}
 }
 async function vpnToggle(btn){
@@ -1797,6 +1798,12 @@ async function vpnToggle(btn){
   if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
   const active=VPN_ACTIVE.includes((S.mp.vpn_state&&S.mp.vpn_state.status)||'');
   const orig=btn.textContent;btn.disabled=true;
+  const _arm=(on)=>{
+    // 确认期（10s）：按钮改「确认切换」并染警示色——互斥确认不可能错过
+    btn.dataset.armed=on?'1':'';
+    btn.classList.toggle('btn-danger',on);
+    btn.textContent=tt(on?'ui.vpn.confirm_btn':'ui.vpn.connect');
+  };
   try{
     if(active){
       await fetch('/api/vpn-disconnect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({})});
@@ -1806,14 +1813,20 @@ async function vpnToggle(btn){
       const d=await r.json();
       if(d.error==='ssh_active'&&!force){
         _vpnForceArmedAt=Date.now();
-        _setProbeResult('vpn-state',tt('ui.vpn.confirm_switch'),'var(--warning,var(--muted))');
+        _arm(true);
+        setTimeout(()=>_arm(false),10000);
+        _setProbeResult('vpn-feedback',tt('ui.vpn.confirm_switch'),'var(--warning,var(--muted))');
+        btn.disabled=false;
         return;
       }
-      if(d.error==='no_profile'){_setProbeResult('vpn-state','❌ '+tt('ui.vpn.profile_none'),'var(--danger)');return;}
+      if(d.error==='ssh_active'&&force){_arm(false);}
+      if(d.error==='no_profile'){_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.profile_none'),'var(--danger)');return;}
+      if(!d.ok){_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.action_failed'),'var(--danger)');return;}
     }
+    _arm(false);
     scheduleVpnPoll();
   }catch(e){toast(tt('ui.vpn.action_failed'),true);}
-  finally{btn.disabled=false;btn.textContent=orig;}
+  finally{btn.disabled=false;if(!btn.dataset.armed)btn.textContent=VPN_ACTIVE.includes((S.mp.vpn_state&&S.mp.vpn_state.status)||'')?tt('ui.vpn.disconnect'):orig;}
 }
 function vpnStatusLine(s){
   if(!s||!s.status||s.status==='idle')return tt('ui.vpn.state_idle');
@@ -1836,10 +1849,12 @@ async function vpnRefreshState(){
     const d=await r.json();
     if(d&&d.mp){S.mp.vpn_state=d.mp.vpn_state||{};}
     const s=S.mp.vpn_state||{};
+    // 状态区只承载轮询的实时状态（操作反馈在 vpn-feedback，互不覆盖
+    // ——此前的确认切换提示被轮询 5s 内冲掉，表现为「点了没反应」）
     const el=document.getElementById('vpn-state');
-    if(el&&!['✅','❌'].some(c=>(el.textContent||'').startsWith(c)))el.textContent=vpnStatusLine(s);
+    if(el)el.textContent=vpnStatusLine(s);
     const tb=document.querySelector('[data-vp="toggle"]');
-    if(tb)tb.textContent=tt(VPN_ACTIVE.includes(s.status)?'ui.vpn.disconnect':'ui.vpn.connect');
+    if(tb&&!tb.dataset.armed)tb.textContent=tt(VPN_ACTIVE.includes(s.status)?'ui.vpn.disconnect':'ui.vpn.connect');
   }catch(e){}
 }
 
