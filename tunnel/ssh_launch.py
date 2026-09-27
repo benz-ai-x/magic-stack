@@ -183,15 +183,19 @@ def build_tunnel_command(tunnel, socks5_port, password=""):
     """长驻隧道的完整调用描述；spawn 由 SSHMonitor 负责。
 
     socks5_port=None → 纯转发模式（多活模型里的「转发会话」）：跳过 -D，
-    只携带 -L。socks5_port 全局唯一，只有代理隧道（current_tunnel）以
-    代理模式启动，其余隧道并行时必须是转发模式——两条 -D 同端口会因
+    只携带 -L。socks5_port 非 None → 代理模式：**恒纯 -D**（ADR-011 修订，
+    2026-09-27——代理服务器自己的 forwards 走独立转发会话，-D 会话不再
+    搭载 -L 便车），结构上忽略 forwards，不依赖调用方剥隧道副本。
+    socks5_port 全局唯一，只有代理隧道（current_tunnel）以代理模式启动，
+    其余隧道并行时必须是转发模式——两条 -D 同端口会因
     ExitOnForwardFailure 直接退出。
     """
     port = str(_ssh(tunnel).get("port", 22))
     dyn_args = [] if socks5_port is None else ["-D", str(socks5_port)]
+    fw_args = _forward_args(tunnel) if socks5_port is None else []
     ssh_args = (
         dyn_args + ["-N", "-o", "ExitOnForwardFailure=yes"]
-        + _forward_args(tunnel)
+        + fw_args
         + _host_key_args()
         + ["-o", "ServerAliveInterval=20", "-o", "ServerAliveCountMax=3",
            # #87：跨国链路——更快判死（60s）、不标 DSCP（防中间设备针对性丢包）、

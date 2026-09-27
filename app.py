@@ -416,8 +416,9 @@ class MagicProxyApp(rumps.App):
         if not (server_openvpn(server).get("profile_set")
                 or vpn_profile_store.profile_exists(server.get("id") or "")):
             return {"ok": False, "error": "no_profile"}
-        # 互斥屏障（ADR-011 共识）：SSH 全活跃时拒连，UI 确认后 force 重发
-        if not force and self._ssh_any_active():
+        # 接入互斥（ADR-011 修订）：仅 -D 接入活跃时拒连，UI 确认后
+        # force 重发——转发/NFS 属服务层，不再拦 VPN
+        if not force and self._access_active():
             return {"ok": False, "error": "ssh_active"}
         self._intents.vpn_connect(server)
         return {"ok": True}
@@ -426,17 +427,17 @@ class MagicProxyApp(rumps.App):
         self._intents.vpn_disconnect()
         return {"ok": True}
 
-    def _ssh_any_active(self):
-        if self._conn.any_connected:
-            return True
-        return any(m.status in ("mounted", "mounting")
-                   for m in self._mounts.mount_states())
+    def _access_active(self):
+        """接入层活跃（ADR-011 修订，2026-09-27）：仅 -D 代理会话
+        connecting/connected。转发会话与 NFS 挂载属服务层，不拦
+        VPN——接入互斥只发生在接入面。"""
+        return self._conn.ssh.status in ("connecting", "connected")
 
     def _vpn_do_connect(self, server):
-        """连接核心（intents 线程纪律：daemon 后台跑）。屏障 = 停全部
-        SSH 会话 + 卸载 NFS（互斥粒度共识）；断开不自动回切 SSH。
-        并发闸：重入即跳过（连点保护——多线程同时拆屏障/重建客户端
-        会互相踩，真机连点场景）。"""
+        """连接核心（intents 线程纪律：daemon 后台跑）。接入层切换 =
+        只停 -D 会话（ADR-011 修订：服务层转发/NFS 不陪葬）；断开不
+        自动回切接入。并发闸：重入即跳过（连点保护——多线程同时做接入
+        切换/重建客户端会互相踩，真机连点场景）。"""
         if not self._vpn_connect_lock.acquire(blocking=False):
             logger.info("vpn connect skipped: already in flight")
             return
@@ -474,11 +475,14 @@ class MagicProxyApp(rumps.App):
                     i18n.t(_VPN_INSTALL_ERR_KEYS.get(
                         code, "vpn.err.install_generic")))
                 return
-        # 拆除屏障：NFS 先卸（hard 挂载防 Finder 卡死，与退出顺序契约
-        # 同理）→ 全部 SSH 会话停
-        logger.info("vpn connect: tearing down SSH barrier")
-        self._mounts.unmount_all()
-        self._conn.stop_all()
+        # 接入层切换（ADR-011 修订）：只停 -D 会话 + 系统代理收敛
+        # （别指着死掉的 :8888）+ 防睡眠重算——转发会话与 NFS 挂载是
+        # 服务层，原地不动（路由翻转断掉的由 VPN connected 事件重建）
+        logger.info("vpn connect: switching access layer (-D only)")
+        self._conn.stop_access()
+        self._sys_proxy.sync()
+        self._lifecycle.sync_sleep(self._conn.ssh.status, self._conn.paused,
+                             self._config.get("prevent_sleep", False))
 
         def _creds():
             return (svc.get("username", ""),
@@ -491,11 +495,22 @@ class MagicProxyApp(rumps.App):
             mgmt_port=VPN_MANAGEMENT_PORT,
             mgmt_password=mgmt_pw or None,
             credentials=_creds,
-            on_state_change=lambda _snap: self._dirty(),
+            on_state_change=self._on_vpn_state_change,
             on_error=self._vpn_error_notify,
         )
         self._vpn_client.start()
         self._dirty()
+
+    def _on_vpn_state_change(self, snap):
+        """VPN 状态回调：dirty 刷菜单；established 时路由翻转已断存量
+        TCP——服务层僵尸重建（转发 + NFS 会话，与唤醒同语义；**绝不
+        拉起 -D**：接入互斥，这是与 handle_reconnect_trigger 的根本
+        差异）。"""
+        self._dirty()
+        if isinstance(snap, dict) and snap.get("status") == "connected":
+            logger.info("vpn established: rebuilding service sessions")
+            self._conn.reconnect_forwards_now()
+            self._mounts.reconnect_now()
 
     def _vpn_do_disconnect(self):
         client = self._vpn_client
@@ -520,8 +535,8 @@ class MagicProxyApp(rumps.App):
         if server is None:
             self.show_preferences(None)
             return
-        if self._ssh_any_active():
-            logger.info("vpn menu connect: ssh active, confirming")
+        if self._access_active():
+            logger.info("vpn menu connect: access active, confirming")
             # rumps.alert 第 3 个位置参数即 ok——标题/正文各占一个位置
             # 参数，按钮文案只能走关键字（3 位置 + ok= 会 TypeError）
             ok = rumps.alert(
@@ -534,9 +549,9 @@ class MagicProxyApp(rumps.App):
 
     def toggle_ssh(self, _item):
         """接入段 SSH 行（行即开关，2026-09-27 定稿）：VPN 活跃 → 原生
-        确认切回 SSH（断 VPN + 恢复会话与挂载——显式切换 = 主动恢复，
-        被动断开仍不回切，ADR-011 语义不变）；连接中 → 取消；已连接 →
-        停止；空闲/失败 → 发起连接。"""
+        确认切回 SSH 接入（断 VPN + 起 -D；服务层会话自管，无需恢复面
+        ——ADR-011 修订）；连接中 → 取消；已连接 → 停止接入（转发/
+        挂载不受影响）；空闲/失败 → 发起连接。"""
         client = getattr(self, "_vpn_client", None)
         vpn_active = client is not None and client.vpn.status in (
             "connecting", "connected", "reconnecting")
@@ -552,8 +567,6 @@ class MagicProxyApp(rumps.App):
                 return
             self._intents.vpn_disconnect()
             self._conn.start()
-            self._conn.apply_autostarts()
-            self._mounts.apply_autostarts()
             return
         s = self._conn.ssh.status
         if s == "connecting":
@@ -727,14 +740,16 @@ class MagicProxyApp(rumps.App):
     # ── connection ───────────────────────────────────────
 
     def cancel_connection(self, _):
-        self._conn.cancel()
+        """取消连接中的接入（菜单 SSH 行点击/连接中态）：只取消 -D
+        会话的建连尝试——转发会话是服务层，不陪葬（ADR-011 修订）。"""
+        self._conn.stop_access()
 
     def stop_proxy_tunnel(self, _):
-        """停止代理（菜单，原「暂停代理」改造）：取消 SSH 隧道连接
-        （-D 会话 + 转发 + 本地代理运行时 + 重试调度）——停止即终止，
-        恢复走「重新连接」。后置同步面对齐 toggle_pause（系统代理收敛
-        与防睡眠状态重算）。"""
-        self._conn.cancel()
+        """停止接入（菜单 SSH 行点击）：只停 -D 会话（含重试调度/本地
+        代理运行时）——转发会话与 NFS 挂载是服务层，不受影响（ADR-011
+        修订）。停止即终止，恢复走接入行再点。后置同步面对齐
+        toggle_pause（系统代理收敛与防睡眠状态重算）。"""
+        self._conn.stop_access()
         self._sys_proxy.sync()
         self._lifecycle.sync_sleep(self._conn.ssh.status, self._conn.paused,
                              self._config.get("prevent_sleep", False))

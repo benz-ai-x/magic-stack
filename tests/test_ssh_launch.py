@@ -292,12 +292,16 @@ class TestProbe(unittest.TestCase):
 
 
 class TestBuildTunnelCommandForwards(unittest.TestCase):
-    """本地端口转发（-L）argv 段：顺序紧跟 -D/ExitOnForwardFailure 组。"""
+    """-L argv 段与形态分离（ADR-011 修订）：代理模式（socks5_port 非
+    None）恒纯 -D（结构上忽略 forwards——代理服务器自己的转发走独立
+    会话）；纯转发模式（None）只携带 -L。"""
 
     _KEY = {"ssh": {"host": "srv", "user": "u", "port": 22,
                     "auth_type": "key", "ssh_key": "~/.ssh/id_rsa"}}
 
-    def test_two_forwards_full_argv(self):
+    def test_proxy_mode_is_pure_d(self):
+        """-D 会话不搭载 -L 便车：有 forwards 也只出 -D（结构保证，
+        不依赖调用方剥隧道副本）。"""
         t = {**self._KEY, "services": {"ssh": {"forwards": [
             {"local_port": 9000, "remote_host": "127.0.0.1", "remote_port": 8000},
             {"local_port": 9001, "remote_host": "10.0.0.5", "remote_port": 5432},
@@ -308,8 +312,6 @@ class TestBuildTunnelCommandForwards(unittest.TestCase):
                 "ssh", "-i", "~/.ssh/id_rsa",
                 "-D", "1080", "-N",
                 "-o", "ExitOnForwardFailure=yes",
-                "-L", "127.0.0.1:9000:127.0.0.1:8000",
-                "-L", "127.0.0.1:9001:10.0.0.5:5432",
                 "-o", "StrictHostKeyChecking=yes",
                 "-o", f"UserKnownHostsFile={host_key.KNOWN_HOSTS_PATH}",
                 "-o", "GlobalKnownHostsFile=/dev/null",
@@ -323,6 +325,31 @@ class TestBuildTunnelCommandForwards(unittest.TestCase):
         finally:
             sc.close_password_fd()
 
+    def test_two_forwards_full_argv(self):
+        """纯转发模式（socks5_port=None）：只携带 -L，无 -D。"""
+        t = {**self._KEY, "services": {"ssh": {"forwards": [
+            {"local_port": 9000, "remote_host": "127.0.0.1", "remote_port": 8000},
+            {"local_port": 9001, "remote_host": "10.0.0.5", "remote_port": 5432},
+        ]}}}
+        sc = ssh_launch.build_tunnel_command(t, None)
+        self.assertNotIn("-D", sc.cmd)
+        self.assertEqual(sc.cmd, [
+            "ssh", "-i", "~/.ssh/id_rsa",
+            "-N",
+            "-o", "ExitOnForwardFailure=yes",
+            "-L", "127.0.0.1:9000:127.0.0.1:8000",
+            "-L", "127.0.0.1:9001:10.0.0.5:5432",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={host_key.KNOWN_HOSTS_PATH}",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "ServerAliveInterval=20",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "IPQoS=none",
+            "-o", "ConnectionAttempts=3",
+            "-C",
+            "-p", "22", "u@srv",
+        ])
+
     def test_no_forwards_argv_unchanged(self):
         """无 forwards 的隧道 argv 与历史完全一致（缺省字段零影响）。"""
         sc_plain = ssh_launch.build_tunnel_command(self._KEY, 1080)
@@ -333,7 +360,7 @@ class TestBuildTunnelCommandForwards(unittest.TestCase):
     def test_remote_host_blank_defaults_to_loopback(self):
         t = {**self._KEY, "services": {"ssh": {"forwards": [
             {"local_port": 9000, "remote_host": "", "remote_port": 8000}]}}}
-        sc = ssh_launch.build_tunnel_command(t, 1080)
+        sc = ssh_launch.build_tunnel_command(t, None)
         self.assertIn("-L", sc.cmd)
         self.assertEqual(sc.cmd[sc.cmd.index("-L") + 1],
                          "127.0.0.1:9000:127.0.0.1:8000")
@@ -348,7 +375,7 @@ class TestBuildTunnelCommandForwards(unittest.TestCase):
             {"local_port": True, "remote_host": "h", "remote_port": 80},
             {"local_port": 9100, "remote_host": "db", "remote_port": 5432},
         ]}}}
-        sc = ssh_launch.build_tunnel_command(t, 1080)
+        sc = ssh_launch.build_tunnel_command(t, None)
         fw = [sc.cmd[i + 1] for i, a in enumerate(sc.cmd) if a == "-L"]
         self.assertEqual(fw, ["127.0.0.1:9100:db:5432"])
 

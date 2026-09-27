@@ -89,13 +89,11 @@ class UserIntents:
         self._mark_dirty()
 
     def stop_proxy(self):
-        """关闭代理（设置窗显式按钮）：停**全部** SSH 会话（-D 代理 +
-        转发）+ 卸载 NFS——与 VPN 拆除屏障同一 teardown 半边（ADR-011
-        互斥粒度：全部 SSH 会话为整体，不拆零售）。停止即终止：不做
-        退避重试拉起（重启走显式「重新连接」/VPN 连接）。慢操作后台跑。"""
+        """关闭接入（设置窗显式按钮）：只停 -D 代理会话（ADR-011 修订
+        2026-09-27：接入层/服务层分离——转发会话与 NFS 挂载不陪葬）。
+        停止即终止不做退避拉起，重启走显式「重新连接」。慢操作后台跑。"""
         def _stop():
-            self._mounts.unmount_all()
-            self._conn.stop_all()
+            self._conn.stop_access()
         self._spawn(_stop, "StopProxy")
         self._mark_dirty()
 
@@ -123,6 +121,8 @@ class UserIntents:
 
     def toggle_forward_row(self, tunnel_id, index):
         """菜单「端口映射逐条启停」：翻转该行磁盘 enabled + 守卫重建。
+        全服务器统一路径（ADR-011 修订：代理服务器自己的转发也是独立
+        -L 会话——点它不再重启整个 -D 接入）。
 
         -L 集合只在会话启动时生效——守卫在 ConnectionCoordinator；
         mutate 构造归 mpconf.toggle_forward_row；写径经注入的事务
@@ -136,26 +136,19 @@ class UserIntents:
                 lambda c: _mpconf.toggle_forward_row(
                     c, tunnel_id, index, not enabled)):
             return
+        # 守卫重建；放行后按新配置推导如实文案（c-3：全停用后
+        # restart 实为收敛停止）
         note = ""
-        if tunnel_id == self._conn.proxy_server_id:
-            # 守卫与保存流同判（proxy_connected=仅 connected，不含
-            # connecting）——未运行的代理绝不因翻转转发被拉起（c-1）
-            if self._conn.proxy_connected:
-                self.reconnect()
-                note = i18n.t("notify.forward.note.proxy_restart")
-        else:
-            # 守卫重建；放行后按新配置推导如实文案（c-3：全停用后
-            # restart 实为收敛停止）
-            if self._conn.restart_forward_async(
-                    tunnel_id, self._reload_config,
-                    thread_name="ToggleForwardRebuild"):
-                any_enabled = any(
-                    isinstance(f, dict) and f.get("enabled") is not False
-                    for f in _mpconf.forward_rows(
-                        _mpconf.load_config(), tunnel_id))
-                note = i18n.t("notify.forward.note.stopped"
-                              if not any_enabled
-                              else "notify.forward.note.rebuild")
+        if self._conn.restart_forward_async(
+                tunnel_id, self._reload_config,
+                thread_name="ToggleForwardRebuild"):
+            any_enabled = any(
+                isinstance(f, dict) and f.get("enabled") is not False
+                for f in _mpconf.forward_rows(
+                    _mpconf.load_config(), tunnel_id))
+            note = i18n.t("notify.forward.note.stopped"
+                          if not any_enabled
+                          else "notify.forward.note.rebuild")
         self._notify(
             i18n.t("notify.forward.enabled.title" if not enabled
                    else "notify.forward.disabled.title"),
