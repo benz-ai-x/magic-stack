@@ -1716,6 +1716,31 @@ function nfsToggleEnabled(el){
 // ── VPN（M2 接线）：导入/凭证/安装/连接全走 config server 端点——
 // 浏览器直开与原生桥同路径（不经 bridge 通道）；互斥确认用「二次点击
 // 确认」（WKWebView 无 window.confirm 依赖）─────────────────────
+
+// ── 页面失活自检（真机教训：设置窗可能是旧实例遗物——token 随实例
+// 轮换，死页面上每次请求 401/网络错且服务端只见静默拒绝）──────
+let _staleStrikes=0;
+function showStaleOverlay(){
+  if(document.getElementById('stale-overlay'))return;
+  const d=document.createElement('div');d.id='stale-overlay';
+  d.style.cssText='position:fixed;inset:0;z-index:99;display:flex;align-items:center;justify-content:center;background:color-mix(in oklch,var(--bg),transparent 55%);backdrop-filter:blur(3px)';
+  const card=document.createElement('div');
+  card.className='panel';
+  card.style.cssText='max-width:420px;padding:22px;text-align:center';
+  card.innerHTML='<h3 style="margin:0 0 8px">'+tt('ui.stale.title')+'</h3>'
+    +'<p style="margin:0 0 4px;color:var(--muted);font-size:13px;line-height:1.7">'+tt('ui.stale.body')+'</p>';
+  d.appendChild(card);
+  document.body.appendChild(d);
+}
+async function apiFetch(url,opts){
+  try{
+    const r=await fetch(url,opts);
+    if(r.status===401){_staleStrikes++;if(_staleStrikes>=2)showStaleOverlay();}
+    else _staleStrikes=0;
+    return r;
+  }catch(e){_staleStrikes++;if(_staleStrikes>=2)showStaleOverlay();throw e;}
+}
+
 const VPN_ACTIVE=['connecting','connected','reconnecting'];
 const VPN_TAIL_KEYS={connecting:'vpn.tail.connecting',connected:'vpn.tail.connected',reconnecting:'vpn.tail.reconnecting',exiting:'vpn.tail.exiting',error:'vpn.tail.error',stopped:'vpn.tail.stopped'};
 let _vpnForceArmedAt=0,_vpnPollTimer=null;
@@ -1739,7 +1764,7 @@ async function vpnImportContent(btn,content){
   const orig=btn?btn.textContent:null;
   if(btn){btn.disabled=true;btn.textContent=tt('ui.vpn.importing');}
   try{
-    const r=await fetch('/api/vpn-profile',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,content})});
+    const r=await apiFetch('/api/vpn-profile',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,content})});
     const d=await r.json();
     if(!d.ok){_setProbeResult('vpn-feedback','❌ '+(d.error||tt('ui.vpn.import_failed')),'var(--danger)');return;}
     const v=vpnNode(S.mp.servers[i]);
@@ -1762,7 +1787,7 @@ async function vpnSavePw(btn){
   if(!pw){toast(tt('ui.vpn.pw_empty'),true);return;}
   const orig=btn.textContent;btn.disabled=true;btn.textContent=tt('ui.vpn.pw_saving');
   try{
-    const r=await fetch('/api/vpn-credentials',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,password:pw})});
+    const r=await apiFetch('/api/vpn-credentials',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,password:pw})});
     const d=await r.json();
     if(!d.ok){toast(tt('ui.vpn.pw_failed'),true);return;}
     inp.value='';
@@ -1778,7 +1803,7 @@ async function vpnInstall(btn){
   const orig=btn.textContent;btn.disabled=true;btn.textContent=tt('ui.vpn.installing');
   _setProbeResult('vpn-feedback',tt('ui.vpn.installing_hint'),'var(--muted)');
   try{
-    const r=await fetch('/api/vpn-install',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i})});
+    const r=await apiFetch('/api/vpn-install',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i})});
     const d=await r.json();
     if(d.ok)_setProbeResult('vpn-feedback','✅ '+tt('ui.vpn.install_ok'),'var(--ok)');
     else{
@@ -1806,10 +1831,10 @@ async function vpnToggle(btn){
   };
   try{
     if(active){
-      await fetch('/api/vpn-disconnect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({})});
+      await apiFetch('/api/vpn-disconnect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({})});
     }else{
       const force=Date.now()-_vpnForceArmedAt<10000;
-      const r=await fetch('/api/vpn-connect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,force})});
+      const r=await apiFetch('/api/vpn-connect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,force})});
       const d=await r.json();
       if(d.error==='ssh_active'&&!force){
         _vpnForceArmedAt=Date.now();
@@ -1833,6 +1858,7 @@ function vpnStatusLine(s){
   const bits=[tt(VPN_TAIL_KEYS[s.status]||'vpn.tail.stopped')];
   if(s.tun_ip)bits.push('tun '+s.tun_ip);
   if(s.error_kind)bits.push(s.error_kind);
+  if(s.error_text){const l=String(s.error_text).trim().split('\n').pop();if(l)bits.push(l.slice(0,80));}
   return bits.join(' · ');
 }
 function scheduleVpnPoll(){
@@ -1845,7 +1871,7 @@ async function vpnRefreshState(){
   // 与按钮态，绝不碰表单、不 renderView
   if(activeSvcTab!=='vpn')return;
   try{
-    const r=await fetch('/api/state',{headers:apiHeaders(null)});
+    const r=await apiFetch('/api/state',{headers:apiHeaders(null)});
     const d=await r.json();
     if(d&&d.mp){S.mp.vpn_state=d.mp.vpn_state||{};}
     const s=S.mp.vpn_state||{};
@@ -2026,7 +2052,7 @@ function nfsPollLoop(){
   },NFS_POLL_MS);
 }
 async function nfsRefreshRuntime(){
-  let d;try{const r=await fetch('/api/state',{headers:apiHeaders(null)});
+  let d;try{const r=await apiFetch('/api/state',{headers:apiHeaders(null)});
     if(!r.ok)return;d=await r.json();}catch(e){return;}
   mergeRuntimeDecorations(S,d);   // 只合并装饰字段，表单不动
   nfsUpdateStatusCells();          // 定向 DOM 更新，不 renderView

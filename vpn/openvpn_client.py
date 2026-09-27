@@ -197,7 +197,10 @@ class VpnClient(SubprocessMonitor):
                 client = None
                 time.sleep(0.2)
         if client is None:
-            self._fail(ERR_MGMT_ATTACH)
+            # 诊断尾巴：attach 失败时把 openvpn 输出尾部带上（stdout 捕获
+            # 后 bind 失败/配置错误一目了然——真机曾在此全盲）
+            tail = "\n".join(self.snapshot_log_lines()[-6:])
+            self._fail(ERR_MGMT_ATTACH, tail)
             return
         self._mgmt = client
         # 初始化序列（openvpn-gui OnReady 同款）：hold off + release（旗标

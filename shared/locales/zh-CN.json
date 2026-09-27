@@ -697,5 +697,7 @@
   "ui.servers.stop_proxy_title": "停止全部 SSH 会话（代理 + 端口转发）并卸载 NFS 挂载——为连接 VPN 做准备；重新连接可随时恢复",
   "ui.bridge.stop_proxy_native_only": "关闭代理需在原生设置窗操作（浏览器模式暂不支持）",
   "proxy.stop": "停止代理",
-  "ui.vpn.confirm_btn": "确认切换"
+  "ui.vpn.confirm_btn": "确认切换",
+  "ui.stale.title": "与应用的连接已失效",
+  "ui.stale.body": "此页面可能来自已退出的应用实例。请关闭本窗口，从菜单栏的 Magic Stack 图标重新打开「偏好设置」。"
 }

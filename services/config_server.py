@@ -297,6 +297,14 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return data
 
+
+    def _log_auth_reject(self, method):
+        """401 拒绝一行日志（无凭证内容）：API 路径的静默拒绝曾让
+        「用户在点死页面」无从查证（真机教训，2026-09-27）。"""
+        path = urlparse(self.path).path
+        if path not in ("/", "/index.html", "/favicon.ico"):
+            logger.info("config api auth rejected: %s %s", method, path)
+
     def do_GET(self):
         if not self._valid_host():
             self._json(403, {"error": "forbidden"})
@@ -314,6 +322,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_agent_md()
             return
         if not self._valid_token():
+            self._log_auth_reject("GET")
             # GET / 的 401 返回登录页（浏览器直接打开可用）；API 路径仍 JSON
             if path in ("/", "/index.html"):
                 self._send(401, _login_html(), "text/html; charset=utf-8",
@@ -332,6 +341,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self._valid_host() or not self._valid_token():
+            self._log_auth_reject("POST")
             self._json(401, {"error": "unauthorized"})
             return
         handler = _API_POST.get(urlparse(self.path).path)
@@ -345,6 +355,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         if not self._valid_host() or not self._valid_token():
+            self._log_auth_reject("PUT")
             self._json(401, {"error": "unauthorized"})
             return
         handler = _API_PUT.get(urlparse(self.path).path)

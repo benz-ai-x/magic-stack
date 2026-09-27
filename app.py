@@ -5,6 +5,7 @@ import logging.handlers
 import os
 import subprocess
 import sys
+import threading
 import time
 
 from AppKit import NSApplication, NSMenu, NSMenuItem, NSApplicationWillTerminateNotification
@@ -75,24 +76,64 @@ _VPN_INSTALL_ERR_KEYS = {
 }
 
 
+def _thread_excepthook(args):
+    """threading.excepthook（模块级可直测）：线程未捕获异常进日志。"""
+    logger.error(
+        "unhandled exception in thread %s",
+        getattr(args.thread, "name", "?"),
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
+def _sys_excepthook(t, v, tb):
+    """sys.excepthook：主解释器未捕获异常进日志。"""
+    logger.error("unhandled exception", exc_info=(t, v, tb))
+
+
+def _install_excepthooks():
+    """windowed 应用的 stderr 丢失黑洞（真机教训：HTTP handler 线程异常
+    打到 stderr 后凭空消失 = 「操作失败」零线索）。三路兜底全进日志：
+    threading.excepthook（线程未捕获异常）/ sys.excepthook（主解释器）/
+    sys.stderr 重定向（ThreadingMixIn.handle_error 等直接 print 的存量
+    路径）。"""
+    threading.excepthook = _thread_excepthook
+    sys.excepthook = _sys_excepthook
+
+    class _StderrToLog:
+        def write(self, text):
+            if text and text.strip():
+                logger.error("stderr| %s", text.rstrip())
+
+        def flush(self):
+            pass
+
+    sys.stderr = _StderrToLog()
+
+
 def _setup_logging():
-    try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-    except OSError:
-        return
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     if log_buffer not in root.handlers:
         root.addHandler(log_buffer)
-    if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
+    # 测试进程绝不写用户真实日志：root handler 共享曾把 MagicMock/假
+    # 服务器输出写进 MagicProxy.log，两轮真机诊断被带偏（2026-09-27）
+    if "pytest" in sys.modules:
         return
-    handler = logging.handlers.RotatingFileHandler(
-        LOG_PATH, maxBytes=512 * 1024, backupCount=2,
-    )
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s"
-    ))
-    root.addHandler(handler)
+    if any(isinstance(h, logging.handlers.RotatingFileHandler)
+           for h in root.handlers):
+        _install_excepthooks()
+        return
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            LOG_PATH, maxBytes=512 * 1024, backupCount=2,
+        )
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s"
+        ))
+        root.addHandler(handler)
+    except OSError:
+        pass
+    _install_excepthooks()
 
 
 _setup_logging()
@@ -169,6 +210,9 @@ class MagicProxyApp(rumps.App):
         # VPN 客户端（M2 接线）：全局至多一条（spec §5.3）——懒构造，
         # 每次连接按当次解析的二进制/凭证重建；投影 lambda 惰性读
         self._vpn_client = None
+        # 连接并发闸：连点/菜单+设置窗双入口同时触发时只跑一个
+        # （屏障与 VpnClient 重建都不重入）
+        self._vpn_connect_lock = threading.Lock()
 
         # Services (AI router + capture + system proxy + sleep + config
         # server): LifecycleRuntime 持有全部构造/启动/退出顺序（架构候选
@@ -231,6 +275,10 @@ class MagicProxyApp(rumps.App):
             # 僵尸实例形态继续起菜单。
             rumps.alert("Magic Stack", i18n.t("alert.instance_running"))
             raise SystemExit(0)
+        # VPN 启动期 reconcile（spec §5.4）：上次异常退出可能留下占着
+        # 管理口的 root openvpn 孤儿与未恢复的 DNS——收养 SIGTERM + DNS
+        # 标志补跑。缺 sudoers/二进制（首次使用）静默跳过。
+        self._vpn_startup_reconcile()
 
         # Menu
         self._menu_builder = MenuBuilder(
@@ -383,7 +431,18 @@ class MagicProxyApp(rumps.App):
 
     def _vpn_do_connect(self, server):
         """连接核心（intents 线程纪律：daemon 后台跑）。屏障 = 停全部
-        SSH 会话 + 卸载 NFS（互斥粒度共识）；断开不自动回切 SSH。"""
+        SSH 会话 + 卸载 NFS（互斥粒度共识）；断开不自动回切 SSH。
+        并发闸：重入即跳过（连点保护——多线程同时拆屏障/重建客户端
+        会互相踩，真机连点场景）。"""
+        if not self._vpn_connect_lock.acquire(blocking=False):
+            logger.info("vpn connect skipped: already in flight")
+            return
+        try:
+            self._vpn_do_connect_locked(server)
+        finally:
+            self._vpn_connect_lock.release()
+
+    def _vpn_do_connect_locked(self, server):
         logger.info("vpn connect requested: server=%s", server.get("id"))
         binary = vpn_privilege.resolve_openvpn_bin()
         if not binary:
@@ -461,6 +520,21 @@ class MagicProxyApp(rumps.App):
                          i18n.t("notify.vpn.ssh_active_body"))
             return
         self._intents.vpn_connect(server)
+
+    def _vpn_startup_reconcile(self):
+        """启动期收养（spec §5.4 落地到生命周期）：残留 root openvpn
+        （上次崩溃/强杀后永久占管理口者）经管理口 SIGTERM + DNS 标志
+        补跑。任何失败只记日志，绝不阻断启动。"""
+        try:
+            from vpn.openvpn_client import adopt_stale_openvpn
+            from vpn import dns_scripts
+            pw = keychain.get_vpn_mgmt_password()
+            binp = vpn_privilege.resolve_openvpn_bin()
+            if pw and binp and vpn_privilege.check_sudoers(binp):
+                adopt_stale_openvpn(pw, VPN_MANAGEMENT_PORT, timeout=1.0)
+                dns_scripts.run_reconcile()
+        except Exception:
+            logger.exception("vpn startup reconcile failed")
 
     # ── tick ─────────────────────────────────────────────
 
@@ -571,6 +645,9 @@ class MagicProxyApp(rumps.App):
         return True
 
     def _notify(self, subtitle, message=""):
+        # 用户可见通知全部落日志（i18n 文案不进日志的纪律只约束开发
+        # 期打印——通知是诊断「用户看到了什么」的关键事实）
+        logger.info("notify: %s | %s", subtitle, message)
         rumps.notification("Magic Stack", subtitle, message)
 
     def _on_mp_saved(self):

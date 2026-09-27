@@ -245,6 +245,30 @@ class TestWireProtocol(unittest.TestCase):
         self.assertTrue(_wait_for(lambda: flag["gone"]))
         client.close()
 
+    def test_handshake_prompt_with_newline_also_works(self):
+        # openvpn 实测提示符不带换行；带换行的变体（其他实现/旧版）也
+        # 必须兼容——子串匹配对两形态都成立，此处钉死防回归
+        a, b = socket.socketpair()
+
+        def serve():
+            f = b.makefile("rwb")
+            f.write(b"ENTER PASSWORD:\n")
+            f.flush()
+            f.readline()
+            f.write(WELCOME)
+            f.flush()
+            f.readline()
+            f.close()
+            b.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        with mock.patch.object(mgmt_client.socket, "create_connection",
+                               return_value=a):
+            client = ManagementClient(password="s3cret", handlers={},
+                                      handshake_timeout=2.0)
+            client.connect("127.0.0.1", 17511)  # 握手通过即断言成立
+        client.close()
+
     def test_handshake_without_password_ok(self):
         # 无密码形态：服务器直接欢迎
         a, b = socket.socketpair()
