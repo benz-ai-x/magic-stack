@@ -316,7 +316,8 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._valid_token():
             # GET / 的 401 返回登录页（浏览器直接打开可用）；API 路径仍 JSON
             if path in ("/", "/index.html"):
-                self._send(401, _login_html(), "text/html; charset=utf-8")
+                self._send(401, _login_html(), "text/html; charset=utf-8",
+                           extra_headers=[("Cache-Control", "no-store")])
             else:
                 self._json(401, {"error": "unauthorized"})
             return
@@ -377,6 +378,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "Set-Cookie",
                     f"cfgsess={self.server.expected_token}; Path=/; "
                     "HttpOnly; SameSite=Strict"))
+            extra.append(("Cache-Control", "no-store"))
             self._send(200, html, "text/html; charset=utf-8", extra_headers=extra)
         except OSError:
             self._json(404, {"error": "config_ui.html not found"})
@@ -659,8 +661,32 @@ class _Handler(BaseHTTPRequestHandler):
         if not vpn_profile_store.save_profile(tunnel.get("id") or "", clean):
             self._json(500, {"error": i18n.t("vpn.err.save_failed")})
             return
+        # profile_set 即时持久化（事务写径）：否则状态只活在页面内存，
+        # app 重启即清零（真机案例：换实例后徽章回「未配置」）。
+        # 只写 profile_set——auth/userpass 须用户名非空是 prepare 的校验
+        # 规则，凭证信息属保存流，这里不越权代写。
+        sid = tunnel.get("id") or ""
+        persisted = False
+        try:
+            def _mark(c):
+                for s in c.get("servers") or []:
+                    if isinstance(s, dict) and s.get("id") == sid:
+                        svc = s.get("services") if isinstance(
+                            s.get("services"), dict) else {}
+                        vpn = dict(svc.get("openvpn")
+                                   if isinstance(svc.get("openvpn"), dict)
+                                   else {})
+                        vpn["profile_set"] = True
+                        svc = dict(svc)
+                        svc["openvpn"] = vpn
+                        s["services"] = svc
+                return c
+            persisted = ConfigStateStore().update_mp(_mark)
+        except Exception:
+            logger.exception("vpn profile_set persist failed")
         self._json(200, {
             "ok": True,
+            "persisted": persisted,
             "removed": [d for d, _line in info.removed],
             "removed_lines": [line for _d, line in info.removed],
             "needs_credentials": info.needs_credentials,

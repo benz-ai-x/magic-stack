@@ -99,6 +99,11 @@ class TestVpnEndpoints(unittest.TestCase):
         saved = profile_store.load_profile("t-aaa")
         self.assertIn("remote vpn.example.com 1194", saved)
         self.assertNotIn("/tmp/evil.sh", saved)
+        # profile_set 即时持久化（事务写径）——app 重启不再清零导入状态
+        self.assertTrue(d.get("persisted"))
+        disk = json.loads(open(self._mp_path).read())
+        self.assertIs(disk["servers"][0]["services"]["openvpn"]
+                      ["profile_set"], True)
 
     def test_profile_import_rejects_no_remote(self):
         code, d = self._post("/api/vpn-profile",
