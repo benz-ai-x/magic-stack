@@ -34,7 +34,7 @@ _LOG_METHODS = {"debug", "info", "warning", "error", "exception",
                 "critical", "log"}
 
 _PACKAGES = ("shared", "tunnel", "mpconf", "shellui", "capture",
-             "sysctl", "services", "suanpan", "docker", "mount")
+             "sysctl", "services", "suanpan", "docker", "mount", "vpn")
 
 
 def _product_files():

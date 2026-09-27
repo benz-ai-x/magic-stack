@@ -24,7 +24,7 @@ Magic Stack — macOS 菜单栏应用（壳），承载两个独立产品：Magi
 
 ## Tech Stack
 
-Python ≥3.9（自有代码下界；**打包工具链因 mitmproxy ≥12 需构建解释器 ≥3.12**，见 ADR-001）+ rumps（菜单栏 UI）+ asyncio（HTTP→SOCKS5 代理）+ PyObjC objc/AppKit/Foundation（WKWebView 设置窗 / CA 信任引导窗 `ca_trust.py` / 日志窗 `log_window.py`）+ Pillow（图标生成）+ mitmproxy 12.2.3（抓包模式 TLS MITM）+ FastAPI + uvicorn + httpx + pydantic（Suanpan AI 路由网关）+ tomlkit（Codex config.toml 增量编辑，ADR-010 M4——缺席时 Codex 车道提示安装，其余 Agent 不受影响）；PyInstaller 打包 `.app`（`--windowed` + `LSUIElement=true`）；SSH 隧道经系统 `ssh` / `sshpass`（密码认证）；SSH 密码走 macOS Keychain。详见 ADR-000 + ADR-001。
+Python ≥3.9（自有代码下界；**打包工具链因 mitmproxy ≥12 需构建解释器 ≥3.12**，见 ADR-001）+ rumps（菜单栏 UI）+ asyncio（HTTP→SOCKS5 代理）+ PyObjC objc/AppKit/Foundation（WKWebView 设置窗 / CA 信任引导窗 `ca_trust.py` / 日志窗 `log_window.py`）+ Pillow（图标生成）+ mitmproxy 12.2.3（抓包模式 TLS MITM）+ FastAPI + uvicorn + httpx + pydantic（Suanpan AI 路由网关）+ tomlkit（Codex config.toml 增量编辑，ADR-010 M4——缺席时 Codex 车道提示安装，其余 Agent 不受影响）+ openvpn 子进程（VPN 接入，`vpn/` 域——用户自装 Homebrew openvpn 2.6+，独立进程 mere aggregation 零 GPL 义务，缺席时安装引导，见 `docs/openvpn-client-spec.md`）；PyInstaller 打包 `.app`（`--windowed` + `LSUIElement=true`）；SSH 隧道经系统 `ssh` / `sshpass`（密码认证）；SSH 密码走 macOS Keychain。详见 ADR-000 + ADR-001。
 
 ## 命令
 
@@ -125,6 +125,30 @@ mount/ ── NFSv4 over SSH 隧道挂载（ADR-007；跨域白名单边 mount�
     副本投影；生命周期编排归 tunnel/ssh_session）
   coordinator.py ── MountCoordinator 挂载生命周期状态机（tick
     reconcile：断线强制卸载/恢复自动重挂，worker 线程跑子进程）
+
+vpn/ ── OpenVPN 客户端域（spec 与调研：docs/openvpn-client-spec.md；
+  M1 域核心——与 SSH 模式互斥的编排层 mode_gate 属后续里程碑）
+  profile.py ── .ovpn 解析/校验/净化单一归宿：脚本/管理类指令剥除
+    （root 执行面第二道闸）+ auth-user-pass 改查询式 + inline 块整段
+    跳过（块内指令形状的行绝不误伤）
+  mgmt_client.py ── management interface 行协议客户端（纯 Python 零
+    依赖，PyPI 封装库全弃维）：密码握手 + version 4 宣告（≤3 静默）+
+    命令-响应/实时事件分发（>STATE/>LOG/>BYTECOUNT/>PASSWORD/>FATAL）+
+    参数转义（openvpn 配置词法：双引号包裹 + 反斜杠/引号转义）
+  openvpn_client.py ── VpnClient（SubprocessMonitor 第三类消费者）：
+    hold off+release 放行时序、STATE→隧道状态机（EXITING 只算退出中，
+    须等进程退出码收尾）、凭证注入回调、bytecount 差分速率（跨重连
+    基数折叠保单调）、>LOG/>FATAL→结构化错误码（域内零文案，UI 层
+    映射 i18n）
+  dns_scripts.py ── root 侧 DNS up/down 脚本模板（macOS 无 dhcp-option
+    应用管线——up 收集 foreign_option_N 应用到默认路由服务并快照原值，
+    down 恢复）+ 崩溃 reconcile 判据（marker 存在 = down 没跑过）
+  privilege.py ── 特权引导：sudoers 全量钉死 argv（零通配——与 NFS 条目
+    的本质差异：config 可控即 root 执行）+ root-only 文件区一次性管理
+    员授权安装（conf 0600/dns 脚本 0755/mgmt.pw 0400）+ openvpn 二进制
+    三级探测（env 覆盖 → brew sbin → PATH；brew 装在 sbin 默认 PATH
+    探不到）；固定管理口端口登 shared/defaults.VPN_MANAGEMENT_PORT，
+    管理密码稳定存 Keychain（崩溃后收养残留 root openvpn 的锚点）
 
 shellui/ ── 界面
   menu_builder.py ── 菜单栏 UI + 状态图标
