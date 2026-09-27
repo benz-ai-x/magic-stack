@@ -690,5 +690,6 @@
   "vpn.err.install_cancelled": "已取消管理员授权",
   "vpn.err.install_verify": "sudoers 规则校验未通过",
   "vpn.err.no_binary_code": "未检测到 openvpn 二进制",
-  "vpn.err.install_generic": "管理员授权失败"
+  "vpn.err.install_generic": "管理员授权失败",
+  "ui.vpn.pick_import": "选择 .ovpn 并导入"
 }

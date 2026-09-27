@@ -456,9 +456,10 @@ test("servers view renders master-detail with proxy badge, service tags and moun
   assert.match(html, /nfsMountAction\(this,0,'mount'\)/);
   assert.match(html, /nfsCheckRemote\(this\)/);
   assert.match(html, /svcCheck\('ssh',this\)/);
-  // OpenVPN 卡（M2 转正）：导入/凭证/安装/连接表单 + 检测（svcCheck）
+  // OpenVPN 卡（M2 转正）：桥接式文件选择（原生）/动态 input（浏览器）+
+  // 凭证/安装/连接表单 + 检测（svcCheck）
   assert.match(html, /OpenVPN 服务/);
-  assert.match(html, /vpnImport\(this\)/);
+  assert.match(html, /vpnPickProfile\(this\)/);
   assert.match(html, /vpnToggle\(this\)/);
   assert.match(html, /svcCheck\('openvpn',this\)/);
   assert.match(html, /id="probe-vpn"/);

@@ -690,5 +690,6 @@
   "vpn.err.install_cancelled": "Admin authorization cancelled",
   "vpn.err.install_verify": "sudoers rule verification failed",
   "vpn.err.no_binary_code": "openvpn binary not found",
-  "vpn.err.install_generic": "Admin authorization failed"
+  "vpn.err.install_generic": "Admin authorization failed",
+  "ui.vpn.pick_import": "Choose .ovpn & Import"
 }

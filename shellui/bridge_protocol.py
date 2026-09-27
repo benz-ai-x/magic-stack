@@ -43,6 +43,7 @@ PICKABLE_FIELDS = frozenset({"sshKey"})
 OPENABLE_KINDS = frozenset({"captureDir"})
 
 ACTION_SHOW_OPEN_PANEL = "showOpenPanel"
+ACTION_VPN_OPEN_PANEL = "vpnOpenPanel"
 ACTION_RECONNECT_PROXY = "reconnectProxy"
 ACTION_OPEN_PATH = "openPath"
 ACTION_COPY_AGENT_INSTRUCTIONS = "copyAgentInstructions"
@@ -112,6 +113,8 @@ class BridgeCore:
                 return [{"type": ACTION_SHOW_OPEN_PANEL, "field": field}]
             logger.warning("pickKeyFile for unknown field: %r", field)
             return []
+        if mtype == "pickVpnProfile":
+            return [{"type": ACTION_VPN_OPEN_PANEL}]
         if mtype == "reconnectProxy":
             # Equivalent of the menu-bar 重新连接 item; the app-level handler
             # owns threading and the actual connection orchestration.

@@ -1581,8 +1581,7 @@ function serversHTML(){
               <div class="field-grid">
                 <div class="field"><label>${tt('ui.vpn.f_profile')}</label>
                   <div style="display:flex;gap:6px;align-items:center">
-                    <input class="control" type="file" accept=".ovpn,text/plain" data-vp="file">
-                    <button class="btn btn-sm" onclick="vpnImport(this)">${tt('ui.vpn.import')}</button>
+                    <button class="btn btn-sm" onclick="vpnPickProfile(this)">${tt('ui.vpn.pick_import')}</button>
                   </div>
                   <p class="panel-hint" style="margin:4px 0 0" data-vp="profile_state">${v.profile_set?tt('ui.vpn.profile_ok'):tt('ui.vpn.profile_none')}</p>
                 </div>
@@ -1718,18 +1717,17 @@ function nfsToggleEnabled(el){
 const VPN_ACTIVE=['connecting','connected','reconnecting'];
 const VPN_TAIL_KEYS={connecting:'vpn.tail.connecting',connected:'vpn.tail.connected',reconnecting:'vpn.tail.reconnecting',exiting:'vpn.tail.exiting',error:'vpn.tail.error',stopped:'vpn.tail.stopped'};
 let _vpnForceArmedAt=0,_vpnPollTimer=null;
-async function vpnImport(btn){
-  collectServers();
-  const ts=S.mp.servers||[],i=activeTunnel;
-  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
-  const inp=document.querySelector('[data-vp="file"]');
-  const f=inp&&inp.files&&inp.files[0];
-  if(!f){toast(tt('ui.vpn.pick_file'),true);return;}
-  const content=await f.text();
-  return vpnImportContent(btn,content);
+// 文件选择：原生窗走桥接（pickVpnProfile → NSOpenPanel → 原生读内容喂
+// vpnFileDelivered——WKWebView 的 HTML file input 需 completion block，
+// PyObjC 调不动且不调会 abort app，故桥接）；浏览器直开走动态 file input
+function vpnPickProfile(btn){
+  const hasBridge=!!(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.bridge);
+  if(hasBridge){nativeSend('pickVpnProfile',{});return;}
+  const inp=document.createElement('input');inp.type='file';inp.accept='.ovpn,text/plain';
+  inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;vpnImportContent(btn,await f.text());};
+  inp.click();
 }
-// 原生 WKWebView 的自愈入口：file input 的 completion block 在 PyObjC
-// 下可能无法调用——原生侧读文件内容直接喂进来（与 FileReader 同一核心）
+// 原生 WKWebView 的投递入口（与浏览器 FileReader 共用同一导入核心）
 window.vpnFileDelivered=function(content){return vpnImportContent(null,content);};
 async function vpnImportContent(btn,content){
   collectServers();
