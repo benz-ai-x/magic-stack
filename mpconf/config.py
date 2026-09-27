@@ -155,6 +155,26 @@ def resolve_mount_dir(mount_row) -> str:
     return f"/Volumes/{safe}"
 
 
+def normalize_openvpn(openvpn) -> dict:
+    """openvpn 服务的读路径归一（与 nfs 同形：单实例服务——enabled + 参数，
+    非 1:n 实例）。profile 正文不进 config（内嵌用户私钥属机密，独立文件
+    0600），此处只持掩码布尔 profile_set（ADR-002 契约）与提炼元数据。"""
+    if not isinstance(openvpn, dict):
+        openvpn = {}
+    auth = openvpn.get("auth")
+    return {
+        "enabled": openvpn.get("enabled") is True,
+        "profile_set": openvpn.get("profile_set") is True,
+        "auth": auth if auth in ("none", "userpass") else "none",
+        "username": str(openvpn.get("username") or "").strip(),
+        "password_set": openvpn.get("password_set") is True,
+        # 缺省 True：不显式关闭即应用服务器 push 的 DNS（关闭经 conf 注入
+        # pull-filter，见 vpn/privilege.runtime_conf）
+        "pull_dns": openvpn.get("pull_dns") is not False,
+        "autostart": openvpn.get("autostart") is True,
+    }
+
+
 # ── servers 形状访问器（路径知识单一归宿）──────────────────────
 
 
@@ -200,6 +220,12 @@ def server_nfs(server) -> dict:
     """服务器的 NFS 服务节点（merge 后形状恒定）。"""
     svc = (server or {}).get("services") or {}
     return (svc.get("nfs") or {})
+
+
+def server_openvpn(server) -> dict:
+    """服务器的 OpenVPN 服务节点（merge 后形状恒定）。"""
+    svc = (server or {}).get("services") or {}
+    return (svc.get("openvpn") or {})
 
 
 def assign_stable_ids(server_rows) -> int:
@@ -441,6 +467,7 @@ def _normalize_server(raw) -> dict:
                 "autostart": ssh_svc.get("autostart") is True,
             },
             "nfs": normalize_nfs(services.get("nfs")),
+            "openvpn": normalize_openvpn(services.get("openvpn")),
         },
     }
 

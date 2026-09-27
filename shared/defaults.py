@@ -17,6 +17,11 @@ DEFAULT_CAPTURE_DIR = os.path.expanduser("~/.magic-proxy-captures")
 DEFAULT_CAPTURE_PORT = 8080
 DEFAULT_GATEWAY_PORT = 9527
 
+# OpenVPN 管理口固定端口（docs/openvpn-client-spec.md §5.2）：sudoers 条目
+# 全量钉死 argv 是端口必须固定的前提；固定端口 + Keychain 稳定管理密码
+# 换来 app 崩溃重启后对残留 root openvpn 的收养能力（§5.4）
+VPN_MANAGEMENT_PORT = 17511
+
 # 端口上界（mp 四端口 / sp listen / 端口转发 / NFS 本地端口共用——
 # 通用约束，归叶子层供 mpconf 与 suanpan 的校验器同一取值）
 PORT_MAX = 65535

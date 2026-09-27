@@ -175,3 +175,105 @@ def delete_sudo_password(server: dict) -> bool:
     except Exception as e:  # noqa: BLE001
         logger.warning("Keychain sudo delete failed: %s", type(e).__name__)
         return False
+
+
+# ── OpenVPN 凭证槽（docs/openvpn-client-spec.md §5.5）─────────────
+# 两条独立槽：per-server 的用户密码（经管理口注入、永不落盘）与全局的
+# 管理口密码（稳定值——崩溃后收养残留 openvpn 的锚点，§5.4）。
+
+def _vpn_account(server: dict) -> str:
+    return f"vpn:{_account(server)}"
+
+
+def set_vpn_password(server: dict, password: str) -> bool:
+    try:
+        account = _vpn_account(server)
+        Security.SecItemDelete(_base_query(server, account))
+        attrs = _base_query(server, account)
+        attrs[Security.kSecValueData] = password.encode("utf-8")
+        status = Security.SecItemAdd(attrs, None)
+        ok = status[0] == Security.errSecSuccess if isinstance(status, tuple) \
+            else status == Security.errSecSuccess
+        if not ok:
+            logger.warning("Keychain vpn set failed: status %s", status)
+        return ok
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Keychain vpn set failed: %s", type(e).__name__)
+        return False
+
+
+def get_vpn_password(server: dict) -> str:
+    try:
+        query = _base_query(server, _vpn_account(server))
+        query[Security.kSecReturnData] = True
+        query[Security.kSecMatchLimit] = Security.kSecMatchLimitOne
+        status, data = Security.SecItemCopyMatching(query, None)
+        if status == Security.errSecSuccess and data is not None:
+            return bytes(data).decode("utf-8")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Keychain vpn get failed: %s", type(e).__name__)
+    return ""
+
+
+def delete_vpn_password(server: dict) -> bool:
+    """删除服务器 VPN 密码槽（服务器删除时清理）。"""
+    try:
+        status = Security.SecItemDelete(_base_query(server, _vpn_account(server)))
+        return status in (0, getattr(Security, "errSecItemNotFound", -25300))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Keychain vpn delete failed: %s", type(e).__name__)
+        return False
+
+
+# 管理口密码槽（全局——不绑服务器；无 server 语义，独立小函数族）
+VPN_MGMT_ACCOUNT = "vpn-mgmt"
+
+
+def _mgmt_query() -> dict:
+    return {
+        Security.kSecClass: Security.kSecClassGenericPassword,
+        Security.kSecAttrService: SERVICE,
+        Security.kSecAttrAccount: VPN_MGMT_ACCOUNT,
+    }
+
+
+def set_vpn_mgmt_password(password: str) -> bool:
+    try:
+        Security.SecItemDelete(_mgmt_query())
+        attrs = _mgmt_query()
+        attrs[Security.kSecValueData] = password.encode("utf-8")
+        status = Security.SecItemAdd(attrs, None)
+        ok = status[0] == Security.errSecSuccess if isinstance(status, tuple) \
+            else status == Security.errSecSuccess
+        if not ok:
+            logger.warning("Keychain vpn-mgmt set failed: status %s", status)
+        return ok
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Keychain vpn-mgmt set failed: %s", type(e).__name__)
+        return False
+
+
+def get_vpn_mgmt_password() -> str:
+    try:
+        query = _mgmt_query()
+        query[Security.kSecReturnData] = True
+        query[Security.kSecMatchLimit] = Security.kSecMatchLimitOne
+        status, data = Security.SecItemCopyMatching(query, None)
+        if status == Security.errSecSuccess and data is not None:
+            return bytes(data).decode("utf-8")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Keychain vpn-mgmt get failed: %s", type(e).__name__)
+    return ""
+
+
+def ensure_vpn_mgmt_password() -> str:
+    """取管理口密码；首次调用生成并落盘（幂等）。失败返回 ''。"""
+    existing = get_vpn_mgmt_password()
+    if existing:
+        return existing
+    import secrets
+    candidate = secrets.token_urlsafe(24)
+    if not set_vpn_mgmt_password(candidate):
+        return ""
+    # 回读校验（写失败/沙盒环境静默降级为 ''——调用方走无密码形态）
+    return get_vpn_mgmt_password() or candidate
