@@ -4,6 +4,7 @@
 
     0  叶子层   shared/ util.py        —— 跨域纯逻辑/工具，不识任何域
     1  域层     tunnel/ mpconf/ capture/ sysctl/ suanpan/
+               mount/ vpn/
     2  编排/UI  services/ shellui/
     3  装配层   app.py docker/
 
@@ -22,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 _LAYERS = {
     "shared": 0, "util": 0,
     "tunnel": 1, "mpconf": 1, "capture": 1, "sysctl": 1, "suanpan": 1,
-    "mount": 1,
+    "mount": 1, "vpn": 1,
     "services": 2, "shellui": 2,
     "app": 3, "docker": 3,
 }
@@ -32,7 +33,7 @@ _ROOT_FILES = {"app.py": "app", "util.py": "util"}
 
 # 守卫覆盖的产品代码根（tests/tools/scripts 除外）
 _PACKAGES = ("shared", "tunnel", "mpconf", "shellui", "capture",
-             "sysctl", "services", "suanpan", "docker", "mount")
+             "sysctl", "services", "suanpan", "docker", "mount", "vpn")
 
 # 设计内同层耦合白名单——每条必须带理由；新增横边不在此列即红。
 _ALLOWED_SAME_LAYER = {

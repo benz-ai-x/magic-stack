@@ -29,6 +29,9 @@ DEFAULT_PATHS = {
     "codex_config": os.path.expanduser("~/.codex/config.toml"),
     "opencode_config": os.path.expanduser("~/.config/opencode/opencode.json"),
     "zcode_config": os.path.expanduser("~/.zcode/v2/config.json"),
+    # OpenVPN profile 落盘目录（spec §4：正文内嵌用户私钥，独立 0600 文件，
+    # config 只存 profile_set 布尔）——目录级注册，文件名按 server_id 拼
+    "vpn_profiles_dir": os.path.expanduser("~/.magic-stack/openvpn"),
 }
 
 # Live registry — tests redirect this (patch.dict), production never does.
