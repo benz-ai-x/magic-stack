@@ -1780,7 +1780,14 @@ async function vpnInstall(btn){
     const r=await fetch('/api/vpn-install',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i})});
     const d=await r.json();
     if(d.ok)_setProbeResult('vpn-state','✅ '+tt('ui.vpn.install_ok'),'var(--ok)');
-    else _setProbeResult('vpn-state','❌ '+tt(d.error_code==='cancelled'?'ui.vpn.install_cancelled':'ui.vpn.install_failed'),'var(--danger)');
+    else{
+      // 错误码分流：缺席二进制（最常见——本机未装）给安装指引，其余如实
+      const key=d.error_code==='openvpn_missing'?'vpn.err.no_binary_code'
+        :d.error_code==='cancelled'?'ui.vpn.install_cancelled'
+        :d.error_code==='sudoers_verify_failed'?'vpn.err.install_verify'
+        :'ui.vpn.install_failed';
+      _setProbeResult('vpn-state','❌ '+tt(key),'var(--danger)');
+    }
   }catch(e){_setProbeResult('vpn-state','❌ '+tt('ui.vpn.install_failed'),'var(--danger)');}
   finally{btn.disabled=false;btn.textContent=orig;}
 }
