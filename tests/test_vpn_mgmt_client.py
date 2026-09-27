@@ -45,7 +45,8 @@ class FakeMgmtServer(threading.Thread):
                 pass
 
     def _serve(self, f):
-        f.write(b"ENTER PASSWORD:\n")
+        # openvpn 实测：提示符无换行（行导向解析等不到——曾致真机握手超时）
+        f.write(b"ENTER PASSWORD:")
         f.flush()
         f.readline()  # 密码行
         f.write(WELCOME)
@@ -224,7 +225,7 @@ class TestWireProtocol(unittest.TestCase):
             # makefile 持有 socket 的 _io_refs——测试侧直接 b.close() 会被
             # 推迟成空操作（不产生 EOF）；由服务器侧先关 f 再关 b 才是真关
             f = b.makefile("rwb")
-            f.write(b"ENTER PASSWORD:\n")
+            f.write(b"ENTER PASSWORD:")
             f.flush()
             f.readline()
             f.write(WELCOME)
@@ -242,6 +243,30 @@ class TestWireProtocol(unittest.TestCase):
                 handshake_timeout=2.0)
             client.connect("127.0.0.1", 17511)
         self.assertTrue(_wait_for(lambda: flag["gone"]))
+        client.close()
+
+    def test_handshake_prompt_with_newline_also_works(self):
+        # openvpn 实测提示符不带换行；带换行的变体（其他实现/旧版）也
+        # 必须兼容——子串匹配对两形态都成立，此处钉死防回归
+        a, b = socket.socketpair()
+
+        def serve():
+            f = b.makefile("rwb")
+            f.write(b"ENTER PASSWORD:\n")
+            f.flush()
+            f.readline()
+            f.write(WELCOME)
+            f.flush()
+            f.readline()
+            f.close()
+            b.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        with mock.patch.object(mgmt_client.socket, "create_connection",
+                               return_value=a):
+            client = ManagementClient(password="s3cret", handlers={},
+                                      handshake_timeout=2.0)
+            client.connect("127.0.0.1", 17511)  # 握手通过即断言成立
         client.close()
 
     def test_handshake_without_password_ok(self):
@@ -267,7 +292,7 @@ class TestWireProtocol(unittest.TestCase):
 
         def serve():
             f = b.makefile("rwb")
-            f.write(b"ENTER PASSWORD:\n")
+            f.write(b"ENTER PASSWORD:")
             f.flush()
             f.readline()
             f.write(b"ERROR: password is incorrect\n")

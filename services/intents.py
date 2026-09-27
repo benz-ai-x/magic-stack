@@ -39,7 +39,8 @@ class UserIntents:
     def __init__(self, *, conn, mounts, notify, mark_dirty, update_mp,
                  reload_config, spawn=None,
                  capture_ctrl=None, get_capture_dir=None, alert=None,
-                 hold_copy_latch=None, get_agent_instructions=None):
+                 hold_copy_latch=None, get_agent_instructions=None,
+                 vpn_connect=None, vpn_disconnect=None):
         self._conn = conn
         self._mounts = mounts
         self._notify = notify
@@ -54,6 +55,10 @@ class UserIntents:
         self._alert = alert
         self._hold_copy_latch = hold_copy_latch
         self._get_agent_instructions = get_agent_instructions
+        # VPN（M2 接线）：连接核心归 app（VpnClient 持有者 + 互斥屏障），
+        # intents 只独占线程纪律与 dirty——同 capture_ctrl 模式
+        self._vpn_connect_impl = vpn_connect
+        self._vpn_disconnect_impl = vpn_disconnect
 
     # ── 重连 ──────────────────────────────────────────────
 
@@ -81,6 +86,17 @@ class UserIntents:
 
     def _do_reconnect(self):
         self._conn.restart(self._reload_config)
+        self._mark_dirty()
+
+    def stop_proxy(self):
+        """关闭代理（设置窗显式按钮）：停**全部** SSH 会话（-D 代理 +
+        转发）+ 卸载 NFS——与 VPN 拆除屏障同一 teardown 半边（ADR-011
+        互斥粒度：全部 SSH 会话为整体，不拆零售）。停止即终止：不做
+        退避重试拉起（重启走显式「重新连接」/VPN 连接）。慢操作后台跑。"""
+        def _stop():
+            self._mounts.unmount_all()
+            self._conn.stop_all()
+        self._spawn(_stop, "StopProxy")
         self._mark_dirty()
 
     # ── 端口转发会话（多活）──────────────────────────────
@@ -189,6 +205,17 @@ class UserIntents:
             subprocess.Popen(["open", d])
         except OSError:
             logger.exception("Failed to open capture dir")
+
+    # ── VPN（M2 接线，spec §3.3）────────────────────────
+
+    def vpn_connect(self, server):
+        """连接 VPN（慢操作：可能弹管理员授权 + 子进程起停——后台跑，
+        菜单/HTTP 点击即返回）。"""
+        self._spawn(lambda: self._vpn_connect_impl(server), "VpnConnect")
+
+    def vpn_disconnect(self):
+        """断开 VPN（管理口 SIGTERM 优雅退出 + DNS down 脚本——后台跑）。"""
+        self._spawn(self._vpn_disconnect_impl, "VpnDisconnect")
 
     # ── AI 助手指令 ───────────────────────────────────────
 

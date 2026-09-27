@@ -43,7 +43,9 @@ PICKABLE_FIELDS = frozenset({"sshKey"})
 OPENABLE_KINDS = frozenset({"captureDir"})
 
 ACTION_SHOW_OPEN_PANEL = "showOpenPanel"
+ACTION_VPN_OPEN_PANEL = "vpnOpenPanel"
 ACTION_RECONNECT_PROXY = "reconnectProxy"
+ACTION_STOP_PROXY = "stopProxy"
 ACTION_OPEN_PATH = "openPath"
 ACTION_COPY_AGENT_INSTRUCTIONS = "copyAgentInstructions"
 ACTION_FORWARD_SESSION = "forwardSession"
@@ -112,6 +114,12 @@ class BridgeCore:
                 return [{"type": ACTION_SHOW_OPEN_PANEL, "field": field}]
             logger.warning("pickKeyFile for unknown field: %r", field)
             return []
+        if mtype == "pickVpnProfile":
+            return [{"type": ACTION_VPN_OPEN_PANEL}]
+        if mtype == "stopProxy":
+            # 关闭代理（设置窗按钮）：停全部 SSH 会话 + 卸载 NFS——与
+            # VPN 拆除屏障同一 teardown 半边；执行纪律归 app/intents
+            return [{"type": ACTION_STOP_PROXY}]
         if mtype == "reconnectProxy":
             # Equivalent of the menu-bar 重新连接 item; the app-level handler
             # owns threading and the actual connection orchestration.

@@ -588,6 +588,13 @@ function validateConfig(S){
     // 中文文案——prepare 是 422 兜底，这里是保存前第一道；v2 模型是
     // 服务器，文案随 Python 侧同轴）
     const tn=t.name||sshOf(t).host||(tt('ui.validate.server_n',{n:i+1}));
+    // OpenVPN 面（镜像 mpconf/validate._vpn_errors：auth 枚举 + userpass
+    // 须用户名——双侧同错同净，校验镜像纪律）
+    const vo=t.services&&t.services.openvpn;
+    if(vo){
+      if(vo.auth&&vo.auth!=='none'&&vo.auth!=='userpass')errors.push(tt('ui.validate.vpn_auth',{tn}));
+      if(vo.auth==='userpass'&&!String(vo.username||'').trim())errors.push(tt('ui.validate.vpn_user',{tn}));
+    }
     const fwSeen={};
     forwardsOf(t).forEach(f=>{
       // 与 prepare 同口径：端口须整数（拦小数），remote_host 字串化
@@ -680,6 +687,7 @@ function sshNode(t){t.ssh=t.ssh||{user:'',host:'',port:22,auth_type:'key',ssh_ke
 function sshSvc(t){const s=t.services=t.services||{};s.ssh=s.ssh||{forwards:[],autostart:false};return s.ssh;}
 const forwardsOf=t=>((((t||{}).services)||{}).ssh||{}).forwards||[];
 function nfsNode(t){const s=t.services=t.services||{};s.nfs=s.nfs||{enabled:false,local_port:12049,squash_to_ssh_user:false,mounts:[]};return s.nfs;}
+function vpnNode(t){const s=t.services=t.services||{};s.openvpn=s.openvpn||{enabled:false,profile_set:false,auth:'none',username:'',password_set:false,pull_dns:true,autostart:false};return s.openvpn;}
 const nfsOf=t=>(((t||{}).services)||{}).nfs;
 const autostartOf=t=>((((t||{}).services)||{}).ssh||{}).autostart===true;
 
@@ -1462,6 +1470,7 @@ function serversHTML(){
   const n=nfsOf(t)||{};
   const nfsOn=n.enabled===true;
   const mountCount=(n.mounts||[]).length;
+  const v=vpnNode(t);
   return `<section class="view">
     <p class="module-intro">${tt('ui.servers.intro_detail')}</p>
     <div class="panel"><div class="md-layout">
@@ -1477,13 +1486,14 @@ function serversHTML(){
           <div class="section-actions">
             ${isCur?`<span class="fw-badge" title="${tt('ui.servers.cur_proxy_title')}">✓ ${tt('ui.servers.cur_proxy')}</span>`:(t.id?`<button class="btn btn-sm" aria-label="${tt('ui.servers.make_proxy_aria',{name:esc(tname)})}" onclick="setProxyServer()">${tt('ui.servers.make_proxy')}</button>`:'')}
             <button class="btn btn-sm" aria-label="${tt('ui.servers.reconnect_aria',{name:esc(tname)})}" onclick="reconnectProxy(this,'${esc(t.id||'')}')">${tt('common.reconnect')}</button>
+            <button class="btn btn-sm" aria-label="${tt('ui.servers.stop_proxy_aria',{name:esc(tname)})}" onclick="stopProxy(this)" title="${tt('ui.servers.stop_proxy_title')}">${tt('ui.servers.stop_proxy')}</button>
             <button class="btn btn-sm btn-danger" aria-label="${tt('ui.servers.delete_aria',{name:esc(tname)})}" onclick="cdel(this,function(){removeServer(${activeTunnel})})">${tt('ui.btn.delete')}</button>
           </div></div>
         <div class="svc-tabs" role="tablist" aria-label="${tt('ui.servers.tabs_aria')}">
           <button class="svc-tab ${activeSvcTab==='conn'?'is-active':''}" data-svc-tab="conn" role="tab" aria-selected="${activeSvcTab==='conn'}" onclick="svcTab('conn')">${icon('plug',16)}${tt('ui.servers.tab_conn')}</button>
           <button class="svc-tab ${activeSvcTab==='fw'?'is-active':''}" data-svc-tab="fw" role="tab" aria-selected="${activeSvcTab==='fw'}" onclick="svcTab('fw')">${icon('arrow-right-left',16)}${tt('menu.group.forward')}${fw.length?`<span class="svc-tab-count">${fwOn}/${fw.length}</span>`:''}</button>
           <button class="svc-tab ${activeSvcTab==='nfs'?'is-active':''}" data-svc-tab="nfs" role="tab" aria-selected="${activeSvcTab==='nfs'}" onclick="svcTab('nfs')">${icon('hard-drive',16)}NFS${nfsOn?`<span class="svc-tab-count">×${mountCount}</span>`:''}</button>
-          <button class="svc-tab ${activeSvcTab==='vpn'?'is-active':''}" data-svc-tab="vpn" role="tab" aria-selected="${activeSvcTab==='vpn'}" onclick="svcTab('vpn')">${icon('shield',16)}OpenVPN<span class="soon">${tt('ui.common.soon')}</span></button>
+          <button class="svc-tab ${activeSvcTab==='vpn'?'is-active':''}" data-svc-tab="vpn" role="tab" aria-selected="${activeSvcTab==='vpn'}" onclick="svcTab('vpn')">${icon('shield',16)}OpenVPN</button>
         </div>
         <div class="detail-body">
           <div class="svc-pane" data-svc-pane="conn" ${activeSvcTab==='conn'?'':'hidden'}>
@@ -1556,17 +1566,53 @@ function serversHTML(){
               </tr></thead><tbody>${nfsMountRows(t)}</tbody></table>
             </div>
           </div>
-          <div class="service-card svc-pane disabled" data-svc-pane="vpn" ${activeSvcTab==='vpn'?'':'hidden'}>
+          <div class="service-card svc-pane" data-svc-pane="vpn" ${activeSvcTab==='vpn'?'':'hidden'}>
             <div class="service-card-head">
               <div class="svc-icon">${icon('shield',16)}</div>
-              <div><div class="svc-title">${tt('ui.vpn.svc_title')}<span class="soon">${tt('ui.common.soon')}</span></div>
+              <div><div class="svc-title">${tt('ui.vpn.svc_title')}</div>
                 <div class="svc-sub">${tt('ui.vpn.svc_sub')}</div></div>
               <div class="grow"></div>
-              <span class="state-badge">${tt('ui.vpn.placeholder')}</span>
+              <span class="state-badge" data-vp="badge">${v.profile_set?tt('ui.vpn.badge_ready'):tt('ui.vpn.badge_empty')}</span>
               <button class="btn btn-sm" aria-label="${tt('ui.vpn.check_aria',{name:esc(tname)})}" onclick="svcCheck('openvpn',this)" title="${tt('ui.vpn.check_title')}">${tt('ui.svc.check')}</button>
             </div>
             <div class="probe-result mono" id="probe-vpn"></div>
-            <div class="vpn-ph"><div>· ${tt('ui.vpn.ph_body')}</div></div>
+            <div class="service-card-body">
+              <div class="fw-head"><h3>${icon('file-up',14)}${tt('ui.vpn.profile_head')}</h3></div>
+              <p class="fw-hint">${tt('ui.vpn.profile_hint')}</p>
+              <div class="field-grid">
+                <div class="field"><label>${tt('ui.vpn.f_profile')}</label>
+                  <div style="display:flex;gap:6px;align-items:center">
+                    <button class="btn btn-sm" onclick="vpnPickProfile(this)">${tt('ui.vpn.pick_import')}</button>
+                  </div>
+                  <p class="panel-hint" style="margin:4px 0 0" data-vp="profile_state">${v.profile_set?tt('ui.vpn.profile_ok'):tt('ui.vpn.profile_none')}</p>
+                </div>
+                <div class="field"><label>${tt('ui.vpn.f_user')}</label>
+                  <input class="control mono" data-vf="username" value="${esc(v.username||'')}" placeholder="${tt('ui.vpn.user_ph')}">
+                </div>
+              </div>
+              <div class="field-grid">
+                <div class="field"><label>${tt('ui.vpn.f_pw')}</label>
+                  <div style="display:flex;gap:6px;align-items:center">
+                    <input class="control mono" type="password" data-vp="pw" placeholder="${v.password_set?tt('ui.vpn.pw_set_ph'):tt('ui.vpn.pw_ph')}">
+                    <button class="btn btn-sm" onclick="vpnSavePw(this)">${tt('ui.vpn.pw_save')}</button>
+                  </div>
+                </div>
+              </div>
+              <div class="toggle-row"><div><label>${tt('ui.vpn.pull_dns')}</label><p class="panel-hint" style="margin:2px 0 0">${tt('ui.vpn.pull_dns_hint')}</p></div>
+                <div class="switch-line"><span class="switch-label">${tt(v.pull_dns!==false?'ui.common.on':'ui.common.off')}</span>
+                <button class="switch" data-vf="pull_dns" role="switch" aria-checked="${v.pull_dns!==false}" aria-label="${tt('ui.vpn.pull_dns')}" onclick="toggleSwitch(this)"></button></div></div>
+              <div class="fw-head" style="margin-top:12px"><h3>${icon('shield-check',14)}${tt('ui.vpn.runtime_head')}</h3></div>
+              <div class="field-grid">
+                <div class="field"><label>${tt('ui.vpn.f_install')}</label>
+                  <button class="btn btn-sm" onclick="vpnInstall(this)" title="${tt('ui.vpn.install_title')}">${tt('ui.vpn.install')}</button>
+                </div>
+                <div class="field"><label>${tt('ui.vpn.f_connect')}</label>
+                  <button class="btn btn-sm btn-primary" onclick="vpnToggle(this)" data-vp="toggle">${tt('ui.vpn.connect')}</button>
+                </div>
+              </div>
+              <div class="probe-result mono" id="vpn-state"></div>
+              <div class="probe-result mono" id="vpn-feedback"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -1592,6 +1638,7 @@ function svcTab(tab){
     b.classList.toggle('is-active',on);
     b.setAttribute('aria-selected',on);
   });
+  if(tab==='vpn')scheduleVpnPoll();
 }
 function selectServer(i){collectServers();recomputeDirty();activeTunnel=i;renderView();}
 // 代理角色唯一显式写径（设置窗侧）：标记为 dirty 待保存；应用要经
@@ -1651,6 +1698,11 @@ function collectServers(){
   Object.assign(nfsNode(t),{enabled:sw('enabled'),
     local_port:parseInt(val('port'),10)||12049,
     squash_to_ssh_user:sw('squash'),mounts});
+  // VPN 面：用户名 + pull_dns 开关（profile/密码经各自端点，不进 JSON）
+  const vv=d.querySelector('[data-vf="username"]');
+  if(vv)vpnNode(t).username=vv.value.trim();
+  const vsw=d.querySelector('[data-vf="pull_dns"]');
+  if(vsw)vpnNode(t).pull_dns=vsw.getAttribute('aria-checked')==='true';
 }
 // NFS 启用开关（卡头）：翻转开关 + 卡片虚线态 + 卡内门控按钮可用性
 function nfsToggleEnabled(el){
@@ -1659,6 +1711,177 @@ function nfsToggleEnabled(el){
   const on=el.getAttribute('aria-checked')==='true';
   card.classList.toggle('disabled',!on);
   card.querySelectorAll('[data-nfs-gated]').forEach(b=>{b.disabled=!on;});
+}
+
+// ── VPN（M2 接线）：导入/凭证/安装/连接全走 config server 端点——
+// 浏览器直开与原生桥同路径（不经 bridge 通道）；互斥确认用「二次点击
+// 确认」（WKWebView 无 window.confirm 依赖）─────────────────────
+
+// ── 页面失活自检（真机教训：设置窗可能是旧实例遗物——token 随实例
+// 轮换，死页面上每次请求 401/网络错且服务端只见静默拒绝）──────
+let _staleStrikes=0;
+function showStaleOverlay(){
+  if(document.getElementById('stale-overlay'))return;
+  const d=document.createElement('div');d.id='stale-overlay';
+  d.style.cssText='position:fixed;inset:0;z-index:99;display:flex;align-items:center;justify-content:center;background:color-mix(in oklch,var(--bg),transparent 55%);backdrop-filter:blur(3px)';
+  const card=document.createElement('div');
+  card.className='panel';
+  card.style.cssText='max-width:420px;padding:22px;text-align:center';
+  card.innerHTML='<h3 style="margin:0 0 8px">'+tt('ui.stale.title')+'</h3>'
+    +'<p style="margin:0 0 4px;color:var(--muted);font-size:13px;line-height:1.7">'+tt('ui.stale.body')+'</p>';
+  d.appendChild(card);
+  document.body.appendChild(d);
+}
+async function apiFetch(url,opts){
+  try{
+    const r=await fetch(url,opts);
+    if(r.status===401){_staleStrikes++;if(_staleStrikes>=2)showStaleOverlay();}
+    else _staleStrikes=0;
+    return r;
+  }catch(e){_staleStrikes++;if(_staleStrikes>=2)showStaleOverlay();throw e;}
+}
+
+const VPN_ACTIVE=['connecting','connected','reconnecting'];
+const VPN_TAIL_KEYS={connecting:'vpn.tail.connecting',connected:'vpn.tail.connected',reconnecting:'vpn.tail.reconnecting',exiting:'vpn.tail.exiting',error:'vpn.tail.error',stopped:'vpn.tail.stopped'};
+let _vpnForceArmedAt=0,_vpnPollTimer=null;
+// 文件选择：原生窗走桥接（pickVpnProfile → NSOpenPanel → 原生读内容喂
+// vpnFileDelivered——WKWebView 的 HTML file input 需 completion block，
+// PyObjC 调不动且不调会 abort app，故桥接）；浏览器直开走动态 file input
+function vpnPickProfile(btn){
+  const hasBridge=!!(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.bridge);
+  if(hasBridge){nativeSend('pickVpnProfile',{});return;}
+  const inp=document.createElement('input');inp.type='file';inp.accept='.ovpn,text/plain';
+  inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;vpnImportContent(btn,await f.text());};
+  inp.click();
+}
+// 原生 WKWebView 的投递入口（与浏览器 FileReader 共用同一导入核心）
+window.vpnFileDelivered=function(content){return vpnImportContent(null,content);};
+async function vpnImportContent(btn,content){
+  collectServers();
+  const ts=S.mp.servers||[],i=activeTunnel;
+  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
+  if(!content||!content.trim()){toast(tt('ui.vpn.pick_file'),true);return;}
+  const orig=btn?btn.textContent:null;
+  if(btn){btn.disabled=true;btn.textContent=tt('ui.vpn.importing');}
+  try{
+    const r=await apiFetch('/api/vpn-profile',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,content})});
+    const d=await r.json();
+    if(!d.ok){_setProbeResult('vpn-feedback','❌ '+(d.error||tt('ui.vpn.import_failed')),'var(--danger)');return;}
+    const v=vpnNode(S.mp.servers[i]);
+    v.profile_set=true;
+    v.auth=d.needs_credentials?'userpass':'none';
+    const notes=[];
+    if(d.removed&&d.removed.length)notes.push(tt('ui.vpn.sanitized',{n:d.removed.length})+'：'+d.removed.join(', '));
+    if(d.missing_client_role)notes.push(tt('ui.vpn.no_client_role'));
+    _setProbeResult('vpn-feedback','✅ '+tt('ui.vpn.imported')+(notes.length?'\n'+notes.join('\n'):''),'var(--ok)');
+    recomputeDirty();renderView();
+  }catch(e){_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.import_failed'),'var(--danger)');}
+  finally{if(btn){btn.disabled=false;btn.textContent=orig;renderView();}}
+}
+async function vpnSavePw(btn){
+  collectServers();
+  const ts=S.mp.servers||[],i=activeTunnel;
+  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
+  const inp=document.querySelector('[data-vp="pw"]');
+  const pw=inp?inp.value:'';
+  if(!pw){toast(tt('ui.vpn.pw_empty'),true);return;}
+  const orig=btn.textContent;btn.disabled=true;btn.textContent=tt('ui.vpn.pw_saving');
+  try{
+    const r=await apiFetch('/api/vpn-credentials',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,password:pw})});
+    const d=await r.json();
+    if(!d.ok){toast(tt('ui.vpn.pw_failed'),true);return;}
+    inp.value='';
+    vpnNode(S.mp.servers[i]).password_set=true;
+    toast(tt('ui.vpn.pw_saved'));
+  }catch(e){toast(tt('ui.vpn.pw_failed'),true);}
+  finally{btn.disabled=false;btn.textContent=orig;renderView();}
+}
+async function vpnInstall(btn){
+  collectServers();
+  const ts=S.mp.servers||[],i=activeTunnel;
+  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
+  const orig=btn.textContent;btn.disabled=true;btn.textContent=tt('ui.vpn.installing');
+  _setProbeResult('vpn-feedback',tt('ui.vpn.installing_hint'),'var(--muted)');
+  try{
+    const r=await apiFetch('/api/vpn-install',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i})});
+    const d=await r.json();
+    if(d.ok)_setProbeResult('vpn-feedback','✅ '+tt('ui.vpn.install_ok'),'var(--ok)');
+    else{
+      // 错误码分流：缺席二进制（最常见——本机未装）给安装指引，其余如实
+      const key=d.error_code==='openvpn_missing'?'vpn.err.no_binary_code'
+        :d.error_code==='cancelled'?'ui.vpn.install_cancelled'
+        :d.error_code==='sudoers_verify_failed'?'vpn.err.install_verify'
+        :'ui.vpn.install_failed';
+      _setProbeResult('vpn-feedback','❌ '+tt(key),'var(--danger)');
+    }
+  }catch(e){_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.install_failed'),'var(--danger)');}
+  finally{btn.disabled=false;btn.textContent=orig;}
+}
+async function vpnToggle(btn){
+  collectServers();
+  const ts=S.mp.servers||[],i=activeTunnel;
+  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
+  const active=VPN_ACTIVE.includes((S.mp.vpn_state&&S.mp.vpn_state.status)||'');
+  const orig=btn.textContent;btn.disabled=true;
+  const _arm=(on)=>{
+    // 确认期（10s）：按钮改「确认切换」并染警示色——互斥确认不可能错过
+    btn.dataset.armed=on?'1':'';
+    btn.classList.toggle('btn-danger',on);
+    btn.textContent=tt(on?'ui.vpn.confirm_btn':'ui.vpn.connect');
+  };
+  try{
+    if(active){
+      await apiFetch('/api/vpn-disconnect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({})});
+    }else{
+      const force=Date.now()-_vpnForceArmedAt<10000;
+      const r=await apiFetch('/api/vpn-connect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,force})});
+      const d=await r.json();
+      if(d.error==='ssh_active'&&!force){
+        _vpnForceArmedAt=Date.now();
+        _arm(true);
+        setTimeout(()=>_arm(false),10000);
+        _setProbeResult('vpn-feedback',tt('ui.vpn.confirm_switch'),'var(--warning,var(--muted))');
+        btn.disabled=false;
+        return;
+      }
+      if(d.error==='ssh_active'&&force){_arm(false);}
+      if(d.error==='no_profile'){toast(tt('ui.vpn.profile_none'),true);_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.profile_none'),'var(--danger)');return;}
+      if(!d.ok){const detail=d.detail?String(d.detail).slice(0,400):'';toast(tt('ui.vpn.action_failed'),true);_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.action_failed')+(detail?'\n'+detail:''),'var(--danger)');return;}
+    }
+    _arm(false);
+    scheduleVpnPoll();
+  }catch(e){toast(tt('ui.vpn.action_failed'),true);}
+  finally{btn.disabled=false;if(!btn.dataset.armed)btn.textContent=VPN_ACTIVE.includes((S.mp.vpn_state&&S.mp.vpn_state.status)||'')?tt('ui.vpn.disconnect'):orig;}
+}
+function vpnStatusLine(s){
+  if(!s||!s.status||s.status==='idle')return tt('ui.vpn.state_idle');
+  const bits=[tt(VPN_TAIL_KEYS[s.status]||'vpn.tail.stopped')];
+  if(s.tun_ip)bits.push('tun '+s.tun_ip);
+  if(s.error_kind)bits.push(s.error_kind);
+  if(s.error_text){const l=String(s.error_text).trim().split('\n').pop();if(l)bits.push(l.slice(0,80));}
+  return bits.join(' · ');
+}
+function scheduleVpnPoll(){
+  clearInterval(_vpnPollTimer);
+  _vpnPollTimer=setInterval(vpnRefreshState,5000);
+  vpnRefreshState();
+}
+async function vpnRefreshState(){
+  // 定向轮询（NFS 错误可见性同款纪律）：只读 vpn_state 装饰刷新状态区
+  // 与按钮态，绝不碰表单、不 renderView
+  if(activeSvcTab!=='vpn')return;
+  try{
+    const r=await apiFetch('/api/state',{headers:apiHeaders(null)});
+    const d=await r.json();
+    if(d&&d.mp){S.mp.vpn_state=d.mp.vpn_state||{};}
+    const s=S.mp.vpn_state||{};
+    // 状态区只承载轮询的实时状态（操作反馈在 vpn-feedback，互不覆盖
+    // ——此前的确认切换提示被轮询 5s 内冲掉，表现为「点了没反应」）
+    const el=document.getElementById('vpn-state');
+    if(el)el.textContent=vpnStatusLine(s);
+    const tb=document.querySelector('[data-vp="toggle"]');
+    if(tb&&!tb.dataset.armed)tb.textContent=tt(VPN_ACTIVE.includes(s.status)?'ui.vpn.disconnect':'ui.vpn.connect');
+  }catch(e){}
 }
 
 // ── server connectivity test + reconnect (bridge) ─────
@@ -1727,6 +1950,16 @@ function reconnectProxy(btn,tunnelId){
       setTimeout(()=>{btn.disabled=false;btn.textContent=tt('common.reconnect');},4000);}
     nativeSend('reconnectProxy',tunnelId?{tunnel_id:tunnelId}:{});
   }else toast(tt('ui.bridge.reconnect_native_only'));
+}
+// 关闭代理（设置窗显式按钮）：停全部 SSH 会话（-D + 转发）+ 卸载 NFS
+// ——与 VPN 拆除屏障同一 teardown（互斥准备）；经 bridge，浏览器直开
+// 回退提示（与重连同款降级）。停止即终止：不做退避拉起。
+function stopProxy(btn){
+  if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.bridge){
+    if(btn){btn.disabled=true;setTimeout(()=>{btn.disabled=false;},4000);}
+    nativeSend('stopProxy',{});
+    setTimeout(()=>{recomputeDirty();renderView();},1200);
+  }else toast(tt('ui.bridge.stop_proxy_native_only'));
 }
 // 多活：非代理隧道的转发会话启停（会话编排归原生侧 coordinator）
 function toggleForwardSession(btn,tunnelId,action){
@@ -1819,7 +2052,7 @@ function nfsPollLoop(){
   },NFS_POLL_MS);
 }
 async function nfsRefreshRuntime(){
-  let d;try{const r=await fetch('/api/state',{headers:apiHeaders(null)});
+  let d;try{const r=await apiFetch('/api/state',{headers:apiHeaders(null)});
     if(!r.ok)return;d=await r.json();}catch(e){return;}
   mergeRuntimeDecorations(S,d);   // 只合并装饰字段，表单不动
   nfsUpdateStatusCells();          // 定向 DOM 更新，不 renderView

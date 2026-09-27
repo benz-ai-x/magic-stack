@@ -87,8 +87,15 @@ class SubprocessMonitor:
 
     # ── launch helper (called by subclass start()) ─────────────────
 
-    def _start_process(self, cmd, *, env=None, pass_fds=(), display_cmd=None):
-        """Common Popen + stderr reader thread launch. Returns True on success."""
+    def _start_process(self, cmd, *, env=None, pass_fds=(), display_cmd=None,
+                       capture_stdout=False):
+        """Common Popen + stderr reader thread launch. Returns True on success.
+
+        capture_stdout=True（openvpn 用）：子进程诊断走 **stdout**（版本
+        banner、管理口 bind 失败等致命错误全在 stdout，stderr 恒空）——
+        不捕获则秒退子进程的死因被 DEVNULL 吞掉，monitor 只见
+        「starting 永不就绪」（真机定位教训，2026-09-27）。
+        """
         self._cmd_str = display_cmd or " ".join(cmd)
         self._status = self._STATUS_STARTING
         self._error_msg = ""
@@ -99,7 +106,8 @@ class SubprocessMonitor:
             self.process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE if capture_stdout
+                else subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 env=env,
                 pass_fds=pass_fds,
@@ -115,14 +123,22 @@ class SubprocessMonitor:
             target=self._read_stderr, args=(proc,), daemon=True,
         )
         self._log_thread.start()
+        if capture_stdout and proc.stdout is not None:
+            threading.Thread(
+                target=self._read_stream, args=(proc, proc.stdout),
+                daemon=True,
+            ).start()
         logger.info("%s starting: %s", self._PROCESS_NAME, self._cmd_str)
         return True
 
-    # ── stderr reader (owns the pipe) ──────────────────────────────
+    # ── stream readers (own their pipe) ────────────────────────────
 
     def _read_stderr(self, proc):
+        self._read_stream(proc, proc.stderr)
+
+    def _read_stream(self, proc, stream):
         try:
-            for line in proc.stderr:
+            for line in stream:
                 decoded = line.decode(errors="replace").rstrip()
                 if decoded:
                     with self._log_lock:
@@ -130,10 +146,10 @@ class SubprocessMonitor:
                     if self._line_sink:
                         self._line_sink(decoded)
         except Exception:
-            logger.exception("stderr reader crashed")
+            logger.exception("stream reader crashed")
         finally:
             try:
-                proc.stderr.close()
+                stream.close()
             except Exception:
                 pass
 

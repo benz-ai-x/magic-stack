@@ -55,7 +55,7 @@ class TestStateGrammar(unittest.TestCase):
     def test_router_toggle_title_follows_running(self):
         mb = self._build(_state(suanpan_running=True,
                                 suanpan_listen_address="127.0.0.1:9527"))
-        titles = [i.title for i in mb.refs["group_router"].values()
+        titles = [i.title for i in mb.refs["group_ai"].values()
                   if hasattr(i, "title")]
         self.assertIn("停止路由", titles)
         self.assertNotIn("启动路由", titles)
@@ -64,27 +64,28 @@ class TestStateGrammar(unittest.TestCase):
         mb = self._build(_state(
             capture_enabled=False, capture_state="idle",
             capture_hint="  首次抓包需先信任本地根 CA——启动后按引导操作"))
-        titles = [i.title for i in mb.refs["group_capture"].values()
+        titles = [i.title for i in mb.refs["group_ai"].values()
                   if hasattr(i, "title")]
         self.assertIn("启动抓包", titles)          # 标题=纯动作
         self.assertNotIn("（需先信任证书）", titles[0])  # 状态/引导不进标题
         self.assertTrue(any("首次抓包" in t for t in titles))  # hint 行
         mb2 = self._build(_state(capture_enabled=True, capture_state="ok"))
-        titles2 = [i.title for i in mb2.refs["group_capture"].values()
+        titles2 = [i.title for i in mb2.refs["group_ai"].values()
                    if hasattr(i, "title")]
         self.assertIn("停止抓包", titles2)
 
-    def test_group_rollup_quiet_when_healthy(self):
+    def test_group_rollup_counts_when_healthy(self):
+        """组标题 rollup（定稿）：健康且有活跃项挂计数（端口映射 n=已
+        连通会话、远程挂载 n=已挂载；connecting 不计数），AI 组无计数。"""
         mb = self._build(_state(
             ssh_status="connected", config=self._cfg(),
-            forward_states=(ForwardState("t-2", "AWS-ap", "connected"),),
+            forward_states=(ForwardState("t-2", "AWS-ap", "connected"),
+                            ForwardState("t-3", "x", "connecting")),
             mount_states=(MountState("t-1", "a", "data", "mounted", ""),),
             suanpan_running=True))
-        self.assertEqual(mb.refs["group_proxy"].title, "代 理")
-        self.assertEqual(mb.refs["group_forward"].title, "端口映射")
-        self.assertEqual(mb.refs["group_mount"].title, "远程挂载")
-        self.assertEqual(mb.refs["group_router"].title, "AI 路由")
-        self.assertEqual(mb.refs["group_capture"].title, "抓 包")
+        self.assertEqual(mb.refs["group_forward"].title, "端口映射 · 1")
+        self.assertEqual(mb.refs["group_mount"].title, "远程挂载 · 1")
+        self.assertEqual(mb.refs["group_ai"].title, "AI")
 
     def test_group_rollup_marks_errors(self):
         mb = self._build(_state(
@@ -93,20 +94,70 @@ class TestStateGrammar(unittest.TestCase):
             mount_states=(MountState("t-1", "a", "data", "error", "x"),
                           MountState("t-1", "a", "ws", "error", "y")),
             suanpan_error="dep missing", capture_state="err"))
-        self.assertEqual(mb.refs["group_proxy"].title, "代 理 ⚠ 1")
         self.assertEqual(mb.refs["group_forward"].title, "端口映射 ⚠ 1")
         self.assertEqual(mb.refs["group_mount"].title, "远程挂载 ⚠ 2")
-        self.assertEqual(mb.refs["group_router"].title, "AI 路由 ⚠ 1")
-        self.assertEqual(mb.refs["group_capture"].title, "抓 包 ⚠ 1")
+        # AI 合并组：路由错误与抓包异常聚合计数
+        self.assertEqual(mb.refs["group_ai"].title, "AI ⚠ 2")
 
-    def test_status_line_uses_unified_separator(self):
+    def test_header_traffic_line_connected_only(self):
+        """状态段（行即开关定稿）：常态零行——接入行圆点已承载状态；
+        仅 SSH 已连接时出现流量行。"""
         mb = self._build(_state(
-            ssh_status="connected", config=self._cfg(),
-            forward_states=(ForwardState("t-2", "AWS-ap", "connected"),),
-            mount_states=(MountState("t-1", "a", "data", "mounted", ""),)))
-        title = mb.refs["proxy_status"].title
-        self.assertIn("1 条转发 · 1 个挂载", title)
-        self.assertNotIn("｜", title)
+            ssh_status="connected", config=self._cfg()))
+        self.assertIn("traffic", mb.refs)
+        mb2 = self._build(_state(
+            ssh_status="stopped", config=self._cfg()))
+        self.assertNotIn("traffic", mb2.refs)
+
+    def test_access_rows_idle_no_dots_no_reconnect(self):
+        """接入段（行即开关）：空闲态两行——SSH 行带服务器名（断开也
+        知道当前配的是谁）、VPN 行无装饰；无重连行、无服务器子菜单
+        （单服务器渐进披露）。"""
+        cfg = {"proxy_server_id": "t-1", "servers": [
+            {"id": "t-1", "name": "Aws-eu", "ssh": {"host": "a"}}]}
+        mb = self._build(_state(config=cfg, current_server=cfg["servers"][0]))
+        self.assertEqual(mb.refs["ssh_access"].title, "SSH · Aws-eu")
+        self.assertEqual(mb.refs["vpn_access"].title, "VPN")
+        self.assertNotIn("reconnect_row", mb.refs)
+        self.assertNotIn("servers_sub", mb.refs)
+
+    def test_access_rows_connected_ssh_and_reconnect(self):
+        cfg = self._cfg()
+        mb = self._build(_state(
+            ssh_status="connected", config=cfg,
+            current_server=cfg["servers"][0]))
+        self.assertEqual(mb.refs["ssh_access"].title, "SSH · Aws-eu")
+        self.assertEqual(mb.refs["reconnect_row"].title, "重新连接")
+
+    def test_access_rows_vpn_connected_and_features_dimmed(self):
+        """VPN 激活：VPN 行带 tun IP；重连行退场；功能段整段置灰
+        （结构恒定——明示「有这些、当前连接方式不可用」）。"""
+        mb = self._build(_state(
+            vpn_status="connected", vpn_tun_ip="10.8.0.2",
+            config=self._cfg()))
+        self.assertEqual(mb.refs["vpn_access"].title, "VPN · 10.8.0.2")
+        self.assertNotIn("reconnect_row", mb.refs)
+        self.assertFalse(
+            mb.refs["sys_proxy_check"]._menuitem.isEnabled())
+        self.assertFalse(mb.refs["group_forward"]._menuitem.isEnabled())
+        self.assertFalse(mb.refs["group_mount"]._menuitem.isEnabled())
+
+    def test_access_servers_submenu_multi_server_only(self):
+        """多服务器 → 接入段「服务器 ▸」（当前上游 ✓ 打头）；单服务器
+        不出现（SSH 行副标题即其名）。"""
+        mb = self._build(_state(config=self._cfg()))   # 两台服务器
+        sub_titles = [r.title for r in mb.refs["servers_sub"].values()
+                      if hasattr(r, "title")]
+        self.assertIn("✓ Aws-eu", sub_titles)
+        self.assertIn("AWS-ap", sub_titles)
+
+    def test_ai_submenu_carries_copy_instructions(self):
+        """「复制 AI 助手指令」自 footer 并入 AI ▸（同类 AI 助手脚手架
+        动作归组）；footer 不再出现。"""
+        mb = self._build(_state())
+        titles = [i.title for i in mb.refs["group_ai"].values()
+                  if hasattr(i, "title")]
+        self.assertIn("复制 AI 助手指令", titles)
 
 
 if __name__ == "__main__":
@@ -162,28 +213,38 @@ class TestMultiActiveTunnels(unittest.TestCase):
             mb = MenuBuilder(app, lambda: _state(
                 ssh_status=ssh_status, config=cfg or self._cfg(),
                 forward_states=forward_states))
-            builder = {"代 理": mb._build_proxy_submenu,
-                       "端口映射": mb._build_forward_submenu,
-                       "选 项": mb._build_system_submenu}[title]
+            builder = {"端口映射": mb._build_forward_submenu,
+                       "AI": mb._build_ai_submenu}[title]
             parent = builder()
         self._mb = mb
         rows = list(parent.values())
         self._titles = [r.title for r in rows if hasattr(r, "title")]
         return parent, [r for r in rows if hasattr(r, "values")]
 
-    def test_proxy_submenu_structure(self):
-        parent, subs = self._submenu("代 理")
-        titles = self._titles
-        self.assertIn("暂停代理", titles)          # connected 语境
-        self.assertIn("重新连接", titles)
-        self.assertIn("开启系统代理", titles)       # 动词式开关
-        self.assertIn("代理服务器（本地代理的上游）", titles)
-        self.assertIn("✓ Aws-eu", titles)          # 角色单选：当前打 ✓
-        self.assertIn("AWS-ap", titles)
-        launch = [t for t in titles if t == "经代理启动 App"]
-        self.assertEqual(len(launch), 1)
-        launch_rows = [s for s in subs if s.title == "经代理启动 App"]
-        self.assertIn("ChatGPT", [i.title for i in list(launch_rows[0].values())])
+    def test_features_section_structure(self):
+        """功能段（定稿）：系统代理（B 类 ✓）+ 端口映射/远程挂载组 +
+        经代理启动；会话动作（连接/停止/重连/服务器）已归接入段——
+        不再在此出现。"""
+        app = MagicMock()
+        added = []
+        app.menu.add.side_effect = lambda i: added.append(i)
+        with unittest.mock.patch(
+                "shellui.menu_builder.chromium_proxy.installed_apps",
+                return_value=[{"name": "ChatGPT"}]):
+            mb = MenuBuilder(app, lambda: _state(
+                ssh_status="connected", config=self._cfg()))
+            mb._build_features_section()
+        titles = [i.title for i in added if hasattr(i, "title")]
+        self.assertIn("系统代理", titles)           # B 类中性名词 + ✓
+        self.assertIn("端口映射", titles)
+        self.assertIn("远程挂载", titles)
+        self.assertNotIn("停止代理", titles)        # 会话动作在接入行
+        self.assertNotIn("连接代理", titles)
+        launches = [r for r in added if hasattr(r, "values")]
+        self.assertTrue(any(
+            "ChatGPT" in [x.title for x in list(l.values())
+                          if hasattr(x, "title")] for l in launches))
+        self.assertEqual(mb.refs["sys_proxy_check"]._menuitem.state(), 0)
 
     def test_forward_submenu_structure(self):
         parent, subs = self._submenu(
@@ -260,72 +321,21 @@ class TestMultiActiveTunnels(unittest.TestCase):
         self.assertIn("Aws-eu — 随代理运行 · 启停将重启代理", titles)
         self.assertIn("7001 → 71 · 已映射", titles)
 
-    def test_system_submenu_uses_native_checks(self):
-        """B 类设置：中性名词标题 + 原生 ✓（NSMenuItem.state）——
-        状态用母语表达，不染运行色。语言子菜单（ADR-012）随组尾。"""
-        self._submenu("选 项", cfg={"prevent_sleep": True,
-                                    "launch_at_login": False,
-                                    "config_api_enabled": True,
-                                    "servers": []})
-        titles = self._titles
-        self.assertEqual(titles, ["防睡眠", "登录启动", "配置 API 服务", "语言"])
-        mb = self._mb
-        self.assertEqual(mb.refs["prevent_sleep"]._menuitem.state(), 1)
-        self.assertEqual(mb.refs["launch_login"]._menuitem.state(), 0)
-        self.assertEqual(mb.refs["config_api"]._menuitem.state(), 1)
-
-    def test_language_submenu_marks_current_preference(self):
-        """选项 ▸「语言」：✓ 跟随磁盘偏好值（auto 是一等选项）。"""
-        parent, _ = self._submenu("选 项", cfg={"servers": [],
-                                                "language": "en"})
-        lang_sub = [r for r in parent.values()
-                    if getattr(r, "title", "") == "语言"][0]
-        states = {r.title: r._menuitem.state()
-                  for r in lang_sub.values() if hasattr(r, "_menuitem")}
-        self.assertEqual(states["English"], 1)
-        self.assertEqual(states["自动（跟随系统）"], 0)
-        self.assertEqual(states["简体中文"], 0)
-
-    def test_status_line_appends_forward_count(self):
-        mb = MenuBuilder(MagicMock(), lambda: _state(
-            ssh_status="connected", config=self._cfg(),
-            forward_states=(ForwardState("t-2", "AWS-ap", "connected"),
-                            ForwardState("t-3", "x", "connecting"))))
-        mb.build()
-        mb.refresh_titles()
-        title = mb.refs["proxy_status"].title
-        self.assertIn("1 条转发", title)
-        self.assertNotIn("🟢", title, "状态行 emoji 已退役（颜色由图标承载）")
-
-    def test_status_line_counts_failures(self):
-        """UX 批次：转发/挂载 error 态在顶部状态行立即可见（此前静默）。"""
-        mb = MenuBuilder(MagicMock(), lambda: _state(
-            ssh_status="connected", config=self._cfg(),
-            forward_states=(ForwardState("t-2", "AWS-ap", "error"),),
-            mount_states=(MountState("t-1", "Aws-eu", "data", "error", "x"),)))
-        mb.build()
-        mb.refresh_titles()
-        title = mb.refs["proxy_status"].title
-        self.assertIn("⚠ 1 转发异常", title)
-        self.assertIn("⚠ 1 挂载异常", title)
-
-    def test_status_line_keeps_tunnel_name_when_disconnected(self):
-        """断开也保留隧道名——此刻更需要知道当前配的是谁。"""
-        cfg = self._cfg()
-        mb = MenuBuilder(MagicMock(), lambda: _state(
-            ssh_status="stopped", config=cfg, current_server=cfg["servers"][0]))
-        mb.build()
-        mb.refresh_titles()
-        self.assertIn("未连接", mb.refs["proxy_status"].title)
-        self.assertIn("Aws-eu", mb.refs["proxy_status"].title)
-
-    def test_router_error_line_is_short(self):
-        """原始错误串不进菜单（截断读不完也无法复制）。"""
-        mb = MenuBuilder(MagicMock(), lambda: _state(
-            suanpan_error="缺少依赖 'fastapi'，请安装：pip3 install -r requirements-dev.txt"))
-        mb.build()
-        mb.refresh_titles()
-        self.assertEqual(mb.refs["router_status"].title, "AI Router · 启动失败")
+    def test_footer_slim(self):
+        """应用段（定稿）：偏好/日志/关于/退出四行；防睡眠与登录启动
+        退役回设置窗（一次性设置不占一级）；复制 AI 助手指令并入 AI ▸。"""
+        app = MagicMock()
+        added = []
+        app.menu.add.side_effect = lambda i: added.append(i)
+        mb = MenuBuilder(app, lambda: _state(config={
+            "prevent_sleep": True, "launch_at_login": False,
+            "config_api_enabled": True, "servers": []}))
+        mb._build_footer()
+        titles = [i.title for i in added if hasattr(i, "title")]
+        self.assertEqual(titles, ["偏好设置…", "查看日志",
+                                  "关于 Magic Stack", "退出"])
+        self.assertNotIn("prevent_sleep", mb.refs)
+        self.assertNotIn("launch_login", mb.refs)
 
 
 class TestDynamicRefreshInPlace(unittest.TestCase):
@@ -544,14 +554,6 @@ class TestMountSubmenu(unittest.TestCase):
         row = [r for r in parent.values()
                if hasattr(r, "title") and r.title == "配置挂载…"][0]
         self.assertIs(row.callback, app.show_prefs_mounts)
-
-    def test_status_line_appends_mount_count(self):
-        mb = MenuBuilder(MagicMock(), lambda: _state(
-            ssh_status="connected", mount_states=self._mounts()))
-        mb.build()
-        mb.refresh_titles()
-        title = mb.refs["proxy_status"].title
-        self.assertIn("1 个挂载", title)
 
 
 class TestForwardRowPerItemToggle(unittest.TestCase):

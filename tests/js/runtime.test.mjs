@@ -456,9 +456,11 @@ test("servers view renders master-detail with proxy badge, service tags and moun
   assert.match(html, /nfsMountAction\(this,0,'mount'\)/);
   assert.match(html, /nfsCheckRemote\(this\)/);
   assert.match(html, /svcCheck\('ssh',this\)/);
-  // OpenVPN 占位卡：配置态仍占位（即将支持徽标），检测已可用（svcCheck）
+  // OpenVPN 卡（M2 转正）：桥接式文件选择（原生）/动态 input（浏览器）+
+  // 凭证/安装/连接表单 + 检测（svcCheck）
   assert.match(html, /OpenVPN 服务/);
-  assert.match(html, /即将支持/);
+  assert.match(html, /vpnPickProfile\(this\)/);
+  assert.match(html, /vpnToggle\(this\)/);
   assert.match(html, /svcCheck\('openvpn',this\)/);
   assert.match(html, /id="probe-vpn"/);
 });
@@ -480,10 +482,11 @@ test("service tabs render in fixed order with live counts and all four panes", (
   assert.deepEqual(
     [...html.matchAll(/data-svc-tab="(\w+)"/g)].map((m) => m[1]),
     ["conn", "fw", "nfs", "vpn"]);
-  // tab 标签计数：端口映射 enabled/total、NFS ×挂载数、OpenVPN 即将支持
+  // tab 标签计数：端口映射 enabled/total、NFS ×挂载数（OpenVPN M2 转正
+  // 后无「即将支持」徽标）
   assert.match(html, /端口映射<span class="svc-tab-count">1\/2<\/span>/);
   assert.match(html, /NFS<span class="svc-tab-count">×1<\/span>/);
-  assert.match(html, /OpenVPN<span class="soon">即将支持<\/span>/);
+  assert.doesNotMatch(html, /class="soon"/);
   // 缺省 tab = 连接：conn pane 可见，其余 hidden——但四 pane 全量渲染
   //（hidden pane 里的 data-* / id 是 collectServers 刮全页、NFS 5s 轮询
   // 与探针结果定向更新的前提，绝不能条件性不渲染）

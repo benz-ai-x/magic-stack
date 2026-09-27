@@ -17,6 +17,7 @@ app.py's import chain) never fails in headless/test environments where the
 WebKit framework is not loaded.
 """
 import logging
+import json
 import os
 
 import objc
@@ -29,7 +30,8 @@ from AppKit import (
 )
 from Foundation import NSObject, NSBundle, NSURL, NSURLRequest
 
-from shellui.bridge_protocol import ACTION_SHOW_OPEN_PANEL, BridgeCore
+from shellui.bridge_protocol import (
+    ACTION_SHOW_OPEN_PANEL, ACTION_VPN_OPEN_PANEL, BridgeCore)
 
 logger = logging.getLogger("magic-proxy.webview")
 
@@ -108,11 +110,38 @@ class _ConfigWindowDelegate(NSObject):
         for action in self._core.handle_message(body):
             if action.get("type") == ACTION_SHOW_OPEN_PANEL:
                 self.showOpenPanelFill_(action["field"])
+            elif action.get("type") == ACTION_VPN_OPEN_PANEL:
+                self.vpnProfilePanel()
             elif self._on_action:
                 try:
                     self._on_action(action)
                 except Exception:
                     logger.exception("bridge action handler failed")
+
+    def vpnProfilePanel(self):
+        """VPN .ovpn 选择（M2）：NSOpenPanel 选文件 → 原生读内容 → 经
+        evaluateJavaScript 喂 vpnFileDelivered()。走桥接而非 HTML file
+        input：WKWebView 的 file input 需要 UIDelegate runOpenPanel 的
+        completion block，而 PyObjC 无法调用无签名 block——不调则 WebKit
+        的 CompletionHandlerCallChecker 直接 abort 整个 app（真机崩溃
+        实证，2026-09-27）；桥接路径零 completion block，与 SSH 密钥选择
+        同款。"""
+        try:
+            panel = NSOpenPanel.openPanel()
+            panel.setCanChooseFiles_(True)
+            panel.setCanChooseDirectories_(False)
+            panel.setAllowsMultipleSelection_(False)
+            panel.setAllowedFileTypes_(["ovpn"])
+            downloads = os.path.expanduser("~/Downloads")
+            if os.path.isdir(downloads):
+                panel.setDirectoryURL_(NSURL.fileURLWithPath_(downloads))
+            if panel.runModal() == 1 and panel.URL() and _webview:
+                content = open(panel.URL().path(), encoding="utf-8",
+                               errors="replace").read()
+                _webview.evaluateJavaScript_completionHandler_(
+                    f"vpnFileDelivered({json.dumps(content)})", None)
+        except Exception:
+            logger.exception("vpn profile picker failed")
 
     def showOpenPanelFill_(self, field):
         """Show NSOpenPanel; ship the picked path to the JS-owned receiver."""
@@ -131,6 +160,7 @@ class _ConfigWindowDelegate(NSObject):
                     _webview.evaluateJavaScript_completionHandler_(js, None)
         except Exception:
             logger.exception("key-file picker failed")
+
 
 
 def show_config_window(url, title="Magic Stack 设置", on_action=None,

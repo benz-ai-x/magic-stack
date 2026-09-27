@@ -99,6 +99,82 @@ class TestConnectionActions(unittest.TestCase):
         a._sys_proxy.sync.assert_called_once()
         a._lifecycle.sync_sleep.assert_called_once()
 
+    def test_stop_proxy_tunnel_cancels_and_syncs(self):
+        """菜单「停止代理」（原暂停改造）：取消隧道 + 后置同步面对齐
+        toggle_pause（系统代理收敛 / 防睡眠重算）。"""
+        a = _make_app()
+        a._conn.ssh.status = "connected"
+        a._conn.paused = False
+        a.stop_proxy_tunnel(None)
+        a._conn.cancel.assert_called_once()
+        a._sys_proxy.sync.assert_called_once()
+        a._lifecycle.sync_sleep.assert_called_once()
+
+    def test_toggle_ssh_idle_click_connects(self):
+        """接入行（行即开关）：空闲态点 SSH 行 = 发起连接。"""
+        a = _make_app()
+        a._vpn_client = None
+        a._conn.ssh.status = "stopped"
+        with patch.object(app, "load_config", return_value=None):
+            a.toggle_ssh(None)
+        a._conn.restart.assert_called_once()
+
+    def test_toggle_ssh_connected_click_stops(self):
+        """已连接点 SSH 行 = 停止代理（断开即终止，重连走接入行再点）。"""
+        a = _make_app()
+        a._vpn_client = None
+        a._conn.ssh.status = "connected"
+        a._conn.paused = False
+        a.toggle_ssh(None)
+        a._conn.cancel.assert_called_once()
+        a._sys_proxy.sync.assert_called_once()
+        a._lifecycle.sync_sleep.assert_called_once()
+
+    def test_toggle_ssh_connecting_click_cancels(self):
+        """连接中点 SSH 行 = 取消连接（开关语义的关闭半边）。"""
+        a = _make_app()
+        a._vpn_client = None
+        a._conn.ssh.status = "connecting"
+        a.toggle_ssh(None)
+        a._conn.cancel.assert_called_once()
+
+    def test_toggle_ssh_confirms_when_vpn_active(self):
+        """VPN 活跃时点 SSH 行：原生确认 → 断 VPN → 恢复 SSH 会话
+        与挂载（显式切换 = 主动恢复）。"""
+        a = _make_app()
+        a._vpn_client = MagicMock()
+        a._vpn_client.vpn.status = "connected"
+        a._intents = MagicMock()
+        with patch("rumps.alert", return_value=True) as alert:
+            a.toggle_ssh(None)
+        args, kwargs = alert.call_args
+        self.assertLessEqual(len(args), 2,
+                             "rumps.alert 第 3 个位置参数即 ok——按钮文案"
+                             "必须走关键字（真机 8da4753 TypeError 实锤）")
+        self.assertIn("ok", kwargs)
+        a._intents.vpn_disconnect.assert_called_once()
+        a._conn.start.assert_called_once()
+        a._conn.apply_autostarts.assert_called_once()
+        a._mounts.apply_autostarts.assert_called_once()
+
+    def test_toggle_vpn_ssh_active_confirm_alert_shape(self):
+        """SSH 活跃时点「VPN 连接」：确认框形状回归——rumps.alert 的
+        第 3 个位置参数就是 ok，3 位置 + ok= 关键字在真机必炸
+        TypeError（点击无反应，2026-09-27 日志实锤）。"""
+        a = _make_app({"servers": [
+            {"id": "t-1", "name": "s1",
+             "ssh": {"host": "h1", "port": 22, "auth_type": "key"},
+             "services": {"openvpn": {"profile_set": True}}}]})
+        a._vpn_client = None
+        a._conn.any_connected = True
+        a._mounts.mount_states.return_value = ()
+        with patch("rumps.alert", return_value=False) as alert:
+            a.toggle_vpn(None)          # 取消 → 不发起连接
+        args, kwargs = alert.call_args
+        self.assertLessEqual(len(args), 2)
+        self.assertIn("ok", kwargs)
+        a._conn.restart.assert_not_called()
+
     def test_toggle_system_proxy_delegates(self):
         a = _make_app()
         a.toggle_system_proxy(None)

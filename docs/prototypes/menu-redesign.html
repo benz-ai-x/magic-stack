@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Magic Stack 菜单重设计原型</title>
+<style>
+  :root {
+    --bar-h: 26px;
+    --menu-w: 296px;
+    --accent: #0a66ff;
+    --ok: #30d158; --warn: #ffd60a; --idle: #98989d; --err: #ff453a;
+    --panel-bg: rgba(40, 40, 44, 0.86);
+    --panel-border: rgba(255,255,255,0.14);
+    --text: rgba(255,255,255,0.94);
+    --text-dim: rgba(255,255,255,0.52);
+    --desktop: linear-gradient(160deg, #1c2b47 0%, #31435f 45%, #6b5a52 100%);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-font-smoothing:antialiased; }
+  html, body { height:100%; }
+  body {
+    font-family: -apple-system, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+    background: var(--desktop);
+    overflow: hidden;
+    color: var(--text);
+  }
+
+  /* ── 菜单栏 ─────────────────────────────────── */
+  .menubar {
+    position: fixed; top:0; left:0; right:0; height: var(--bar-h);
+    background: rgba(20,20,24,0.92); backdrop-filter: blur(18px);
+    display:flex; align-items:center; justify-content:flex-end;
+    padding: 0 12px; gap: 14px; z-index: 100; font-size: 13px;
+    color: rgba(255,255,255,0.9);
+    -webkit-user-select:none; user-select:none;
+  }
+  .mb-item { opacity:.85; cursor: default; }
+  .mb-icon { width: 17px; height: 17px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+  .mb-icon svg { width: 16px; height: 16px; }
+  .mb-icon.active { background: rgba(255,255,255,0.16); border-radius: 4px; }
+  .mb-clock { font-variant-numeric: tabular-nums; margin-left: 4px; }
+
+  /* ── 下拉菜单面板 ─────────────────────────────── */
+  .panel {
+    position: fixed; top: calc(var(--bar-h) + 6px); right: 10px;
+    width: var(--menu-w);
+    background: var(--panel-bg);
+    backdrop-filter: blur(28px) saturate(1.6);
+    border: .5px solid var(--panel-border);
+    border-radius: 10px;
+    box-shadow: 0 12px 34px rgba(0,0,0,.5), 0 0 0 .5px rgba(0,0,0,.3);
+    padding: 5px;
+    z-index: 90;
+    font-size: 13.5px; line-height: 1;
+    display: none;
+    -webkit-user-select:none; user-select:none;
+  }
+  .panel.open { display: block; animation: pop .12s ease-out; }
+  @keyframes pop { from { opacity:0; transform: translateY(-4px) scale(.99);} to { opacity:1; transform:none; } }
+
+  .row {
+    display:flex; align-items:center; gap: 7px;
+    height: 23px; padding: 0 9px 0 8px; border-radius: 5px;
+    white-space: nowrap; position: relative; color: var(--text);
+  }
+  .row.clickable:hover { background: var(--accent); color:#fff; }
+  .row.clickable:hover .dim, .row.clickable:hover .key,
+  .row.clickable:hover .sub-arrow { color: rgba(255,255,255,.8); }
+  .row.clickable:hover .dot.ok   { background:#ceffc0; }
+  .row.clickable:hover .dot.warn { background:#fff2ae; }
+  .row.clickable:hover .dot.err  { background:#ffd2cf; }
+  .row.disabled { color: var(--text-dim); pointer-events: none; }
+  .row .grow { flex:1; }
+  .key { color: var(--text-dim); font-size: 12px; margin-left: auto; }
+  .sub-arrow { color: var(--text-dim); margin-left: 8px; font-size: 11px; }
+  .row.has-key .key { margin-left: 18px; }
+  .check { width: 14px; text-align:center; color: var(--text); flex:none; }
+  .check.empty { visibility: hidden; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)}
+  .dot.err{background:var(--err)} .dot.idle{background:var(--idle)}
+  .sep { height: .5px; background: rgba(255,255,255,.16); margin: 5px 9px; }
+  .section-label { color: var(--text-dim); font-size: 11px; padding: 3px 9px 1px; }
+  .traffic-ico { width: 14px; text-align:center; color: var(--idle); font-size: 11px; }
+  .log-line { color: var(--text-dim); font-size: 12px; padding-left: 22px; font-family: ui-monospace, "SF Mono", monospace; height: 20px; line-height:20px; border-radius: 4px; }
+  .badge {
+    position:absolute; right: -4px; top: 50%; transform: translate(100%, -50%);
+    width: 15px; height: 15px; border-radius: 8px; background: #ff9f0a; color:#1b1b1f;
+    font-size: 10px; font-weight: 700; display:flex; align-items:center; justify-content:center;
+    box-shadow: 0 0 0 2px rgba(27,27,31,.6); z-index: 5;
+  }
+
+  /* 子菜单 */
+  .subpanel {
+    position: absolute; left: calc(100% - 4px); top: -5px;
+    width: var(--menu-w); background: var(--panel-bg);
+    backdrop-filter: blur(28px) saturate(1.6);
+    border: .5px solid var(--panel-border); border-radius: 10px;
+    box-shadow: 0 12px 34px rgba(0,0,0,.5);
+    padding: 5px; display: none; font-size: 13.5px;
+  }
+  .row.has-sub:hover > .subpanel { display:block; }
+
+  /* ── 控制台（原型控件）───────────────────────── */
+  .console {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: rgba(20,20,24,.9); backdrop-filter: blur(20px);
+    border: .5px solid rgba(255,255,255,.16); border-radius: 12px;
+    padding: 10px 14px; display:flex; flex-direction: column; gap: 8px;
+    z-index: 200; box-shadow: 0 10px 30px rgba(0,0,0,.45);
+  }
+  .console .line { display:flex; align-items:center; gap: 8px; justify-content:center; }
+  .seg { display:flex; background: rgba(255,255,255,.1); border-radius: 8px; padding: 2px; }
+  .seg button {
+    border:0; background:transparent; color: var(--text-dim); font: inherit; font-size: 12.5px;
+    padding: 4px 12px; border-radius: 6px; cursor: pointer;
+  }
+  .seg button.on { background: #48484e; color: var(--text); }
+  .chip {
+    border: .5px solid rgba(255,255,255,.22); background: rgba(255,255,255,.08);
+    color: var(--text); font: inherit; font-size: 12px; padding: 4px 10px;
+    border-radius: 999px; cursor: pointer;
+  }
+  .chip.on { background: var(--accent); border-color: transparent; }
+  .stats { color: var(--text-dim); font-size: 11.5px; text-align:center; font-variant-numeric: tabular-nums; }
+  .stats b { color: #ffd60a; font-weight: 600; }
+
+  /* 设计注解侧栏 */
+  .notes {
+    position: fixed; right: 14px; top: 64px; width: 264px;
+    background: rgba(20,20,24,.88); backdrop-filter: blur(20px);
+    border: .5px solid rgba(255,255,255,.14); border-radius: 12px;
+    padding: 14px; z-index: 80; font-size: 12px; line-height: 1.55;
+    color: var(--text-dim); display: none;
+  }
+  .notes.show { display:block; }
+  .notes h3 { font-size: 12.5px; color: var(--text); margin-bottom: 8px; }
+  .notes ol { padding-left: 18px; display:flex; flex-direction:column; gap: 6px; }
+  .notes .n { color:#ff9f0a; font-weight:700; margin-right: 4px; }
+
+  .hint {
+    position: fixed; top: 44px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,.55); font-size: 12px; z-index: 60;
+    text-shadow: 0 1px 4px rgba(0,0,0,.4); pointer-events:none;
+  }
+</style>
+</head>
+<body>
+
+<div class="menubar">
+  <div class="mb-item">◦◦◦</div>
+  <div class="mb-item">⌘</div>
+  <div class="mb-item">⛺︎</div>
+  <div class="mb-icon" id="mb-app" title="Magic Stack">
+    <svg viewBox="0 0 24 24" fill="none">
+      <path d="M12 2.5 4 6v6c0 5 3.4 8 8 9.5 4.6-1.5 8-4.5 8-9.5V6l-8-3.5z"
+            fill="#5ac8fa" fill-opacity=".35" stroke="#5ac8fa" stroke-width="1.4"/>
+      <path d="M12 7.2 8.8 12h2.4l-.8 4 3.6-5.2h-2.4l.8-3.6z" fill="#ffd60a"/>
+    </svg>
+  </div>
+  <div class="mb-item mb-clock" id="clock">20:00</div>
+</div>
+
+<div class="hint">点菜单栏右侧的 Magic Stack 图标 ⌃</div>
+
+<div class="panel" id="panel"></div>
+
+<div class="notes" id="notes">
+  <h3>新设计 · 决策注解</h3>
+  <ol>
+    <li><span class="n">①</span><b style="color:var(--text)">状态双行同框</b>：SSH 与 VPN 的互斥现状一眼可见，不再各藏一组。</li>
+    <li><span class="n">②</span><b style="color:var(--text)">接入模式单选</b>：点未选中模式 = 原生确认框 → 自动拆屏障并切换（今天你走通的流程变成一键）。</li>
+    <li><span class="n">③</span><b style="color:var(--text)">SSH 段置灰</b>：VPN 模式时整段置灰不隐藏——结构恒定（就地刷新的前提），且明示「有这些、暂不可用」。</li>
+    <li><span class="n">④</span><b style="color:var(--text)">AI ▸ 合并组</b>：路由 + 抓包同属 AI 工具栈，高频启停保留一级，低频动作下沉二级。</li>
+    <li><span class="n">⑤</span><b style="color:var(--text)">选项收编</b>：高频开关（防睡眠/登录启动）尾部直陈；配置 API 与语言进设置窗。</li>
+  </ol>
+</div>
+
+<div class="console">
+  <div class="line">
+    <div class="seg" id="design-seg">
+      <button data-design="current">现状 · 七组</button>
+      <button data-design="new" class="on">新设计 · 四段</button>
+    </div>
+  </div>
+  <div class="line" id="state-chips">
+    <button class="chip on" data-state="ssh_connected">SSH 已连接</button>
+    <button class="chip" data-state="ssh_connecting">SSH 连接中</button>
+    <button class="chip" data-state="vpn_connected">VPN 已连接</button>
+    <button class="chip" data-state="idle">全空闲</button>
+    <button class="chip" data-state="error">有异常</button>
+  </div>
+  <div class="stats" id="stats"></div>
+</div>
+
+<script>
+"use strict";
+
+/* ────────── 状态预设 ────────── */
+const STATES = {
+  ssh_connected: {
+    label: "SSH 已连接",
+    ssh: "connected", vpn: "idle", router: true, capture: false,
+    server: "aliyun", traffic: "↓ 1.2 MB/s · ↑ 240 KB/s · 12 连接",
+    fwUp: 3, fwBad: 0, mountsUp: 2, mountsBad: 0,
+  },
+  ssh_connecting: {
+    label: "SSH 连接中",
+    ssh: "connecting", vpn: "idle", router: true, capture: false,
+    server: "aliyun",
+    cmd: "ssh -i ~/.ssh/ali.pem -D 1080 -N aliyun…",
+    logs: ["debug1: Authenticating…", "channel 0: new [session]", "expecting SSH2_MSG_KEX"],
+  },
+  vpn_connected: {
+    label: "VPN 已连接",
+    ssh: "stopped", vpn: "connected", router: true, capture: false,
+    server: "aws", tunIp: "10.8.0.2",
+    traffic: "↓ 340 KB/s · ↑ 96 KB/s",
+  },
+  idle: {
+    label: "全空闲",
+    ssh: "disconnected", vpn: "idle", router: false, capture: false,
+    server: "aliyun",
+  },
+  error: {
+    label: "有异常",
+    ssh: "connected", vpn: "idle", router: true, capture: false,
+    server: "aliyun", traffic: "↓ 1.2 MB/s · ↑ 240 KB/s · 12 连接",
+    fwUp: 2, fwBad: 1, mountsUp: 2, mountsBad: 0,
+  },
+};
+
+/* ────────── 渲染器 ────────── */
+const el = (cls, html) => { const d = document.createElement("div"); if (cls) d.className = cls; if (html != null) d.innerHTML = html; return d; };
+
+function row(opts) {
+  // opts: {label, key, dot, check, sub(items), disabled, badge, clickable, dim}
+  const r = el("row" + (opts.disabled ? " disabled" : "") +
+      (opts.clickable === false ? "" : " clickable"));
+  if (opts.check !== undefined) {
+    r.append(el("check" + (opts.check ? "" : " empty"), opts.check ? "✓" : ""));
+  } else if (opts.dot) {
+    r.append(el("dot " + opts.dot));
+  } else if (opts.icon) {
+    r.append(el("check", `<span style="opacity:.8">${opts.icon}</span>`));
+  } else {
+    r.append(el("check empty", ""));
+  }
+  r.append(el("grow", opts.label));
+  if (opts.key) r.append(el("key", opts.key));
+  if (opts.sub) {
+    r.append(el("sub-arrow", "▸"));
+    r.classList.add("has-sub");
+    const sp = el("subpanel");
+    opts.sub.forEach(it => sp.append(it));
+    r.append(sp);
+  }
+  if (opts.badge) r.append(el("badge", opts.badge));
+  return r;
+}
+const sep = () => el("sep");
+const secLabel = (t) => el("section-label", t);
+const logLine = (t) => el("log-line", t);
+const statusRow = (dot, text) => { const r = row({label: text, clickable: false}); r.replaceChild(el("dot " + dot), r.firstChild); return r; };
+
+/* ── 现状（七组）── */
+function renderCurrent(st) {
+  const p = el("");
+  // 状态区
+  if (st.ssh === "connected") {
+    p.append(statusRow("ok",
+      `AI Proxy · ${st.server}` +
+      (st.fwUp ? ` · ${st.fwUp} 条转发` : "") +
+      (st.mountsUp ? ` · ${st.mountsUp} 处挂载` : "") +
+      (st.fwBad ? ` · <span style="color:var(--err)">${st.fwBad} 转发异常</span>` : "")));
+  } else if (st.ssh === "connecting") {
+    p.append(statusRow("warn", `正在连接 · ${st.server}`));
+  } else if (st.ssh === "stopped") {
+    p.append(statusRow("idle", `AI Proxy · ${st.server}（未连接）`));
+  } else {
+    p.append(statusRow("idle", `AI Proxy · ${st.server}（未连接）`));
+  }
+  p.append(statusRow(st.router ? "ok" : "idle", st.router ? "AI Router · 127.0.0.1:9527" : "AI Router"));
+  if (st.ssh === "connecting" && st.cmd) {
+    p.append(logLine(st.cmd));
+    (st.logs || []).forEach(l => p.append(logLine(l)));
+  }
+  if (st.ssh === "connected" && st.traffic)
+    p.append(row({icon: "⇅", label: st.traffic, clickable: false}));
+  p.append(sep());
+
+  // 代 理 ▸
+  const proxySub = [];
+  if (st.ssh === "connecting") proxySub.push(row({label: "取消连接", key: "⌘R", icon: "✕"}));
+  else if (st.ssh === "connected") proxySub.push(row({label: "停止代理", key: "⌘P", icon: "✕"}));
+  else proxySub.push(row({label: "连接代理", key: "⌘R", icon: "▶"}));
+  proxySub.push(row({label: "重新连接", key: "⌘R", icon: "↻"}));
+  proxySub.push(sep());
+  proxySub.push(row({label: st.ssh === "connected" ? "关闭系统代理" : "开启系统代理", key: "⌘G", dot: "ok"}));
+  proxySub.push(sep());
+  proxySub.push(secLabel("上游服务器"));
+  proxySub.push(row({label: "aliyun", check: st.server === "aliyun"}));
+  proxySub.push(row({label: "aws-ap", check: st.server === "aws"}));
+  proxySub.push(sep());
+  proxySub.push(row({label: "经代理启动 ▸ Chrome", icon: "🚀"}));
+  p.append(row({icon: "⇄", label: "代 理", sub: proxySub}));
+
+  // 端口映射 ▸
+  const fwSub = [];
+  if (st.ssh === "connected") fwSub.push(row({label: `随 ${st.server} 运行`, dot: "ok", clickable: false}));
+  fwSub.push(row({label: "8030 → 3080", dot: st.fwBad ? "err" : (st.fwUp ? "ok" : "idle")}));
+  fwSub.push(row({label: "9080 → 80", dot: st.fwUp >= 2 ? "ok" : "idle"}));
+  fwSub.push(row({label: "58432 → 55432", dot: st.fwUp >= 3 ? "ok" : "idle"}));
+  p.append(row({icon: "⇥", label: "端口映射", sub: fwSub}));
+
+  // 远程挂载 ▸
+  const mntSub = [
+    row({label: "data · 已挂载", dot: "ok"}),
+    row({label: "workspace · 已挂载", dot: "ok"}),
+  ];
+  p.append(row({icon: "💽", label: "远程挂载", sub: mntSub}));
+
+  // VPN 网络 ▸
+  const vpnSub = [];
+  if (st.vpn === "connected") {
+    vpnSub.push(row({label: "断开 VPN · 已连接", dot: "ok"}));
+    vpnSub.push(logLine("tun " + (st.tunIp || "")));
+  } else {
+    vpnSub.push(row({label: "连接 VPN · 未启动", dot: "idle"}));
+  }
+  p.append(row({icon: "🛡", label: "VPN 网络", sub: vpnSub}));
+
+  // AI 路由 ▸
+  const rtSub = [];
+  if (st.router) {
+    rtSub.push(row({label: "停止路由", dot: "ok"}));
+    rtSub.push(row({label: "重启路由", icon: "↻"}));
+    rtSub.push(row({label: "重载配置", icon: "⟳"}));
+  } else {
+    rtSub.push(row({label: "启动路由", dot: "idle"}));
+  }
+  rtSub.push(sep());
+  rtSub.push(row({label: "配置 Agent…", icon: "✨"}));
+  rtSub.push(row({label: "复制访问地址", icon: "⧉"}));
+  rtSub.push(row({label: "复制示例配置", icon: "⧉"}));
+  p.append(row({icon: "◈", label: "AI 路由", sub: rtSub}));
+
+  // 抓 包 ▸
+  const capSub = [
+    row({label: st.capture ? "停止抓包" : "启动抓包", key: "⌘M", dot: st.capture ? "ok" : "idle"}),
+    sep(),
+    row({label: "打开抓包目录", icon: "📁"}),
+    row({label: "今日 JSONL", icon: "🗂"}),
+  ];
+  p.append(row({icon: "◉", label: "抓 包", sub: capSub}));
+
+  // 选 项 ▸
+  const optSub = [
+    row({label: "防睡眠", check: true}),
+    row({label: "登录启动", check: true}),
+    row({label: "配置 API 常驻", check: false}),
+    sep(),
+    row({label: "跟随系统（中文）", check: true}),
+    row({label: "English", check: false}),
+  ];
+  p.append(row({icon: "⚙", label: "选 项", sub: optSub}));
+
+  // 页脚
+  p.append(sep());
+  p.append(row({label: "偏好设置…", key: "⌘,", icon: "⚙"}));
+  p.append(row({label: "查看日志", key: "⌘L", icon: "🔍"}));
+  p.append(row({label: "复制 AI 助手指令", icon: "⧉"}));
+  p.append(sep());
+  p.append(row({label: "关于 Magic Stack", icon: "ⓘ"}));
+  p.append(row({label: "退出", key: "⌘Q", icon: "⏻"}));
+  return p;
+}
+
+/* ── 新设计（四段）── */
+function renderNew(st) {
+  const p = el("");
+  const sshDim = st.vpn === "connected";      // VPN 模式：SSH 段置灰
+  const dis = sshDim;                          // 置灰开关
+
+  // ① 状态总览：SSH/VPN 双行同框
+  if (st.ssh === "connected")
+    p.append(statusRow("ok", `SSH · ${st.server}` +
+        (st.fwUp ? ` · ${st.fwUp} 转发` : "") + (st.mountsUp ? ` · ${st.mountsUp} 挂载` : "") +
+        (st.fwBad ? ` · <span style="color:var(--err)">${st.fwBad} 异常</span>` : "")));
+  else if (st.ssh === "connecting")
+    p.append(statusRow("warn", `SSH · 正在连接 ${st.server}`));
+  else
+    p.append(statusRow("idle", `SSH · ${st.server}（未连接）`));
+  const vpnLine = statusRow(st.vpn === "connected" ? "ok" : "idle",
+      st.vpn === "connected" ? `VPN · 已连接 ${st.tunIp}` : "VPN · 未启动");
+  p.append(vpnLine);
+  p.append(statusRow(st.router ? "ok" : "idle", st.router ? "Router · 127.0.0.1:9527" : "Router"));
+  if (st.ssh === "connecting" && st.cmd) {
+    p.append(logLine(st.cmd));
+    (st.logs || []).slice(0,2).forEach(l => p.append(logLine(l)));
+  }
+  if (st.traffic && (st.ssh === "connected" || st.vpn === "connected"))
+    p.append(row({icon: "⇅", label: st.traffic, clickable: false}));
+
+  // ② 接入模式单选段
+  p.append(sep());
+  p.append(secLabel("接入模式"));
+  p.append(row({label: "SSH 隧道（代理 + 转发 + 挂载）", check: !sshDim, badge: "②"}));
+  p.append(row({label: "VPN（OpenVPN 全隧道）", check: sshDim, badge: "②"}));
+  if (sshDim)
+    p.append(row({label: "断开 VPN", key: "⌘V", dot: "ok"}));
+
+  // ③ SSH 模式段（VPN 模式时置灰）
+  p.append(sep());
+  if (st.ssh === "connecting" && !dis) {
+    p.append(row({label: "取消连接", key: "⌘R", icon: "✕"}));
+  } else {
+    p.append(row({label: st.ssh === "connected" ? "停止代理" : "连接代理", key: "⌘P", icon: "✕", disabled: dis}));
+    p.append(row({label: "重新连接", key: "⌘R", icon: "↻", disabled: dis}));
+  }
+  p.append(row({label: "系统代理", check: st.ssh === "connected", key: "⌘G", disabled: dis}));
+
+  const fwSub = [
+    row({label: "8030 → 3080", dot: st.fwBad ? "err" : (st.fwUp ? "ok" : "idle")}),
+    row({label: "9080 → 80", dot: st.fwUp >= 2 ? "ok" : "idle"}),
+    row({label: "58432 → 55432", dot: st.fwUp >= 3 ? "ok" : "idle"}),
+  ];
+  p.append(row({icon: "⇥", label: "端口映射" + (st.fwUp ? ` · ${st.fwUp}` : ""), sub: fwSub, disabled: dis}));
+
+  const mntSub = [
+    row({label: "data · 已挂载", dot: "ok"}),
+    row({label: "workspace · 已挂载", dot: "ok"}),
+  ];
+  p.append(row({icon: "💽", label: "远程挂载" + (st.mountsUp ? ` · ${st.mountsUp}` : ""), sub: mntSub, disabled: dis}));
+
+  // ④ AI ▸ 合并组
+  const aiSub = [];
+  if (st.router) {
+    aiSub.push(row({label: "停止路由", dot: "ok"}));
+    aiSub.push(row({label: "重启 / 重载", icon: "↻"}));
+  } else {
+    aiSub.push(row({label: "启动路由", dot: "idle"}));
+  }
+  aiSub.push(row({label: "复制访问地址 / 示例配置", icon: "⧉"}));
+  aiSub.push(sep());
+  aiSub.push(row({label: st.capture ? "停止抓包" : "启动抓包", key: "⌘M", dot: st.capture ? "ok" : "idle"}));
+  aiSub.push(row({label: "抓包目录 · 今日 JSONL", icon: "🗂"}));
+  p.append(row({icon: "◈", label: "AI", sub: aiSub, badge: "④"}));
+
+  // ⑤ 尾部（选项收编）
+  p.append(sep());
+  p.append(row({label: "偏好设置…", key: "⌘,", icon: "⚙"}));
+  p.append(row({label: "查看日志", key: "⌘L", icon: "🔍"}));
+  p.append(row({label: "复制 AI 助手指令", icon: "⧉"}));
+  p.append(row({label: "防睡眠", check: true}));
+  p.append(row({label: "登录启动", check: true}));
+  p.append(sep());
+  p.append(row({label: "关于 Magic Stack", icon: "ⓘ"}));
+  p.append(row({label: "退出", key: "⌘Q", icon: "⏻"}));
+  return p;
+}
+
+/* ────────── 行数统计 ────────── */
+function topRows(panel) { return panel.querySelectorAll(":scope > .row").length; }
+function allRows(panel) {
+  const top = topRows(panel);
+  let sub = 0;
+  panel.querySelectorAll(".subpanel").forEach(sp => sub += sp.querySelectorAll(":scope > .row").length);
+  return {top, sub, all: top + sub};
+}
+
+/* ────────── 应用状态 ────────── */
+let design = "new", stateKey = "ssh_connected";
+const panel = document.getElementById("panel");
+
+function render() {
+  const st = STATES[stateKey];
+  panel.innerHTML = "";
+  const content = design === "new" ? renderNew(st) : renderCurrent(st);
+  while (content.firstChild) panel.append(content.firstChild);
+  // 两套设计分别统计
+  const c = allRows(renderCurrent(st));
+  const n = allRows(renderNew(st));
+  const curShown = design === "new" ? n : c;
+  const other = design === "new" ? c : n;
+  document.getElementById("stats").innerHTML =
+    `当前 <b>${design === "new" ? "新设计" : "现状"}</b>：顶层 ${curShown.top} 行 · 全展开 ${curShown.all} 行` +
+    `&ensp;|&ensp;${design === "new" ? "现状" : "新设计"}：顶层 ${other.top} 行 · 全展开 ${other.all} 行`;
+  document.getElementById("notes").classList.toggle("show", design === "new");
+}
+
+document.getElementById("mb-app").addEventListener("click", function (e) {
+  panel.classList.toggle("open");
+  this.classList.toggle("active");
+  e.stopPropagation();
+});
+document.addEventListener("click", (e) => {
+  if (!panel.contains(e.target)) { panel.classList.remove("open");
+    document.getElementById("mb-app").classList.remove("active"); }
+});
+
+document.querySelectorAll("#design-seg button").forEach(b => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("#design-seg button").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    design = b.dataset.design;
+    render();
+  });
+});
+document.querySelectorAll("#state-chips .chip").forEach(b => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("#state-chips .chip").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    stateKey = b.dataset.state;
+    render();
+  });
+});
+
+/* 时钟 */
+function tick() {
+  const d = new Date();
+  const pad = (x) => String(x).padStart(2, "0");
+  const wd = ["日","一","二","三","四","五","六"][d.getDay()];
+  document.getElementById("clock").textContent =
+    `${d.getMonth()+1}月${d.getDate()}日 周${wd} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+tick(); setInterval(tick, 10000);
+render();
+</script>
+</body>
+</html>

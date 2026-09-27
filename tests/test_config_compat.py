@@ -353,7 +353,7 @@ class TestDecorateRuntimeState(unittest.TestCase):
     def test_writes_exactly_the_declared_set(self):
         # 装饰只写 RUNTIME_DECORATED_FIELDS；strip 名单运行态半边同源派生
         mp = config.decorate_runtime_state(self._mp(), self._proj())
-        written = ({"capture_active"}
+        written = ({"capture_active", "vpn_state"}
                    | {k for t in mp["servers"]
                       for k in t
                       if k not in ("id", "name", "ssh", "services")})

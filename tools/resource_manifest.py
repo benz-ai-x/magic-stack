@@ -12,6 +12,7 @@ RESOURCE_MANIFEST = [
     ("docs/examples/suanpan.example.yaml", "."),
     ("capture/ai_capture_addon.py", "."),
     ("assets/MenubarIcon.png", "."),
+    ("assets/MenubarIcon-green.png", "."),
     ("assets/MenubarIcon-gray.png", "."),
     ("assets/MenubarIcon-yellow.png", "."),
     # mitmdump 子树单独 add（dist-mitmdump/mitmdump → mitmdump/），不入此清单

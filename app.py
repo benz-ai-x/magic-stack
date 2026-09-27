@@ -5,6 +5,7 @@ import logging.handlers
 import os
 import subprocess
 import sys
+import threading
 import time
 
 from AppKit import NSApplication, NSMenu, NSMenuItem, NSApplicationWillTerminateNotification
@@ -20,15 +21,20 @@ from shared.identity import IdentityMigrationError
 from sysctl import port_check
 from shellui.bridge_protocol import (ACTION_COPY_AGENT_INSTRUCTIONS,
     ACTION_FORWARD_SESSION, ACTION_NFS_MOUNT_TOGGLE, ACTION_OPEN_PATH,
-    ACTION_RECONNECT_PROXY)
-from shared.defaults import DEFAULT_CAPTURE_DIR, DEFAULT_CAPTURE_PORT
+    ACTION_RECONNECT_PROXY, ACTION_STOP_PROXY)
+from shared.defaults import (DEFAULT_CAPTURE_DIR, DEFAULT_CAPTURE_PORT,
+                             VPN_MANAGEMENT_PORT)
 from mpconf.config import (  # noqa: F401 — DEFAULT_CONFIG 是模块导出符号
-    DEFAULT_CONFIG, load_config, merge_config, resolve_mount_dir)
+    DEFAULT_CONFIG, load_config, merge_config, resolve_mount_dir,
+    server_openvpn, servers)
 from mount.coordinator import MountCoordinator
+from vpn import privilege as vpn_privilege
+from vpn import profile_store as vpn_profile_store
+from vpn.openvpn_client import VpnClient
 from shared.runtime_state import RuntimeProjection
 from shellui.log_window import LogBuffer, show_log_window
 from shellui.webview_window import show_config_window
-from shellui.menu_builder import MenuBuilder, MenuState, _status_color_for_connection
+from shellui.menu_builder import MenuBuilder, MenuState, _menubar_color
 from mpconf.config_state import ConfigStateStore
 from shared.stats import Stats
 from tunnel.connection_coordinator import ConnectionCoordinator
@@ -44,25 +50,90 @@ VERSION_DISPLAY = version_display(VERSION, build_stamp())
 
 log_buffer = LogBuffer()
 
+# VPN 结构化错误码 → 文案键（字面键名表——取词守卫纪律：表存键名，
+# t() 调用点查表；键全集在 shared/locales 双侧登记）
+_VPN_ERR_KEYS = {
+    "auth_failed": "vpn.err.auth_failed",
+    "auth_required": "vpn.err.auth_required",
+    "auth_challenge_unsupported": "vpn.err.challenge",
+    "cipher_mismatch": "vpn.err.cipher",
+    "cert_expired": "vpn.err.cert_expired",
+    "cert_invalid": "vpn.err.cert_invalid",
+    "tls_error": "vpn.err.tls",
+    "unreachable": "vpn.err.unreachable",
+    "server_exit": "vpn.err.server_exit",
+    "crashed": "vpn.err.crashed",
+    "mgmt_lost": "vpn.err.mgmt_lost",
+    "mgmt_attach_failed": "vpn.err.mgmt_attach",
+    "start_failed": "vpn.err.start_failed",
+    "fatal": "vpn.err.generic",
+}
+_VPN_INSTALL_ERR_KEYS = {
+    "cancelled": "vpn.err.install_cancelled",
+    "sudoers_verify_failed": "vpn.err.install_verify",
+    "openvpn_missing": "vpn.err.no_binary_code",
+    "osascript_failed": "vpn.err.install_generic",
+}
+
+
+def _thread_excepthook(args):
+    """threading.excepthook（模块级可直测）：线程未捕获异常进日志。"""
+    logger.error(
+        "unhandled exception in thread %s",
+        getattr(args.thread, "name", "?"),
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+
+def _sys_excepthook(t, v, tb):
+    """sys.excepthook：主解释器未捕获异常进日志。"""
+    logger.error("unhandled exception", exc_info=(t, v, tb))
+
+
+def _install_excepthooks():
+    """windowed 应用的 stderr 丢失黑洞（真机教训：HTTP handler 线程异常
+    打到 stderr 后凭空消失 = 「操作失败」零线索）。三路兜底全进日志：
+    threading.excepthook（线程未捕获异常）/ sys.excepthook（主解释器）/
+    sys.stderr 重定向（ThreadingMixIn.handle_error 等直接 print 的存量
+    路径）。"""
+    threading.excepthook = _thread_excepthook
+    sys.excepthook = _sys_excepthook
+
+    class _StderrToLog:
+        def write(self, text):
+            if text and text.strip():
+                logger.error("stderr| %s", text.rstrip())
+
+        def flush(self):
+            pass
+
+    sys.stderr = _StderrToLog()
+
 
 def _setup_logging():
-    try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-    except OSError:
-        return
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     if log_buffer not in root.handlers:
         root.addHandler(log_buffer)
-    if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
+    # 测试进程绝不写用户真实日志：root handler 共享曾把 MagicMock/假
+    # 服务器输出写进 MagicProxy.log，两轮真机诊断被带偏（2026-09-27）
+    if "pytest" in sys.modules:
         return
-    handler = logging.handlers.RotatingFileHandler(
-        LOG_PATH, maxBytes=512 * 1024, backupCount=2,
-    )
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s"
-    ))
-    root.addHandler(handler)
+    if any(isinstance(h, logging.handlers.RotatingFileHandler)
+           for h in root.handlers):
+        _install_excepthooks()
+        return
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            LOG_PATH, maxBytes=512 * 1024, backupCount=2,
+        )
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s"
+        ))
+        root.addHandler(handler)
+    except OSError:
+        pass
+    _install_excepthooks()
 
 
 _setup_logging()
@@ -136,6 +207,13 @@ class MagicProxyApp(rumps.App):
         # Non-blocking quit→relaunch state machine for proxied app launches
         self._relaunch_waiter = None
 
+        # VPN 客户端（M2 接线）：全局至多一条（spec §5.3）——懒构造，
+        # 每次连接按当次解析的二进制/凭证重建；投影 lambda 惰性读
+        self._vpn_client = None
+        # 连接并发闸：连点/菜单+设置窗双入口同时触发时只跑一个
+        # （屏障与 VpnClient 重建都不重入）
+        self._vpn_connect_lock = threading.Lock()
+
         # Services (AI router + capture + system proxy + sleep + config
         # server): LifecycleRuntime 持有全部构造/启动/退出顺序（架构候选
         # 2+3）——app 只经合法属性面取子模块引用，不再两阶段构造、不再
@@ -152,7 +230,9 @@ class MagicProxyApp(rumps.App):
             runtime_state_fn=lambda: RuntimeProjection(
                 capture_active=self._capture_ctrl.actively_running,
                 forwards=tuple(self._conn.forward_sessions()),
-                mounts=tuple(self._mounts.mount_states())),
+                mounts=tuple(self._mounts.mount_states()),
+                vpn=(self._vpn_client.snapshot()
+                     if self._vpn_client is not None else None)),
             on_mp_saved=self._on_mp_saved,
         )
         self._suanpan = self._lifecycle.suanpan
@@ -160,6 +240,11 @@ class MagicProxyApp(rumps.App):
         self._sys_proxy = self._lifecycle.sys_proxy
         self._capture = self._lifecycle.capture
         self._config_server = self._lifecycle.config_server
+        # VPN 动作 seam（M2）：connect/disconnect 是 app 侧动作（VpnClient
+        # 持有者 + 互斥屏障），设置窗 HTTP 端点经此回调——与 runtime_state_fn
+        # 同款注入，浏览器直开场景同路径可用（不经原生 bridge）
+        self._config_server.vpn_connect_fn = self._vpn_connect_intent
+        self._config_server.vpn_disconnect_fn = self._vpn_disconnect_intent
         # 用户意图单一归宿（架构评审 R5 候选 1）：菜单回调与设置窗桥接
         # 两套 adapter 共用——guard 分派/线程纪律/通知/dirty 在 intents
         # 独占，app 只做翻译（菜单从状态推导、桥接从 action 字符串映射）
@@ -178,6 +263,8 @@ class MagicProxyApp(rumps.App):
             hold_copy_latch=lambda: self._set_config_holders(
                 copy_latch=True),
             get_agent_instructions=self._config_server.agent_instructions,
+            vpn_connect=self._vpn_do_connect,
+            vpn_disconnect=self._vpn_do_disconnect,
         )
         # ADR-009 配置服务持有者：设置窗开着 / 复制指令会话闩锁。
         # config_api_enabled 是第三持有者（磁盘真相，经 self._config 读）。
@@ -188,6 +275,10 @@ class MagicProxyApp(rumps.App):
             # 僵尸实例形态继续起菜单。
             rumps.alert("Magic Stack", i18n.t("alert.instance_running"))
             raise SystemExit(0)
+        # VPN 启动期 reconcile（spec §5.4）：上次异常退出可能留下占着
+        # 管理口的 root openvpn 孤儿与未恢复的 DNS——收养 SIGTERM + DNS
+        # 标志补跑。缺 sudoers/二进制（首次使用）静默跳过。
+        self._vpn_startup_reconcile()
 
         # Menu
         self._menu_builder = MenuBuilder(
@@ -288,7 +379,204 @@ class MagicProxyApp(rumps.App):
             forward_states=tuple(self._conn.forward_sessions()),
             mount_states=tuple(self._mounts.mount_states()),
             language=i18n.language(),
+            vpn_status=(getattr(self, "_vpn_client").vpn.status
+                        if getattr(self, "_vpn_client", None) is not None
+                        else "idle"),
+            vpn_server=((self._vpn_configured_server() or {}).get("name")
+                        or ""),
+            vpn_error=(getattr(self, "_vpn_client").vpn.error_kind
+                       if getattr(self, "_vpn_client", None) is not None
+                       else ""),
+            vpn_tun_ip=(getattr(self, "_vpn_client").vpn.tun_ip
+                        if getattr(self, "_vpn_client", None) is not None
+                        else ""),
         )
+
+    # ── VPN（M2 接线，spec §3.3/§7.2）────────────────────
+
+    def _vpn_configured_server(self):
+        """「已配置 VPN 的服务器」单一解析：profile_set 的第一台。"""
+        for s in servers(self._config):
+            if isinstance(s, dict) and server_openvpn(s).get("profile_set"):
+                return s
+        return None
+
+    def _vpn_connect_intent(self, index, force=False):
+        """设置窗 HTTP 入口：同步校验（可拒）→ 意图层后台执行。
+        返回 dict 直接作为端点响应（错误用结构化码，文案在 UI 侧映射）。"""
+        logger.info("vpn connect intent: index=%r force=%r", index, force)
+        rows = servers(self._config)
+        if (isinstance(index, bool) or not isinstance(index, int)
+                or not 0 <= index < len(rows)):
+            return {"ok": False, "error": "bad_index"}
+        server = rows[index]
+        # profile 判定以落盘文件为准（导入端点即时写文件）——不依赖保存
+        # 流的 profile_set 布尔：真机案例（2026-09-27）导入后未保存，连
+        # 接被 no_profile 弹回而用户只见「没反应」
+        if not (server_openvpn(server).get("profile_set")
+                or vpn_profile_store.profile_exists(server.get("id") or "")):
+            return {"ok": False, "error": "no_profile"}
+        # 互斥屏障（ADR-011 共识）：SSH 全活跃时拒连，UI 确认后 force 重发
+        if not force and self._ssh_any_active():
+            return {"ok": False, "error": "ssh_active"}
+        self._intents.vpn_connect(server)
+        return {"ok": True}
+
+    def _vpn_disconnect_intent(self):
+        self._intents.vpn_disconnect()
+        return {"ok": True}
+
+    def _ssh_any_active(self):
+        if self._conn.any_connected:
+            return True
+        return any(m.status in ("mounted", "mounting")
+                   for m in self._mounts.mount_states())
+
+    def _vpn_do_connect(self, server):
+        """连接核心（intents 线程纪律：daemon 后台跑）。屏障 = 停全部
+        SSH 会话 + 卸载 NFS（互斥粒度共识）；断开不自动回切 SSH。
+        并发闸：重入即跳过（连点保护——多线程同时拆屏障/重建客户端
+        会互相踩，真机连点场景）。"""
+        if not self._vpn_connect_lock.acquire(blocking=False):
+            logger.info("vpn connect skipped: already in flight")
+            return
+        try:
+            self._vpn_do_connect_locked(server)
+        finally:
+            self._vpn_connect_lock.release()
+
+    def _vpn_do_connect_locked(self, server):
+        logger.info("vpn connect requested: server=%s", server.get("id"))
+        binary = vpn_privilege.resolve_openvpn_bin()
+        if not binary:
+            logger.warning("vpn connect aborted: openvpn binary missing")
+            self._notify(i18n.t("notify.vpn.no_binary"),
+                         i18n.t("notify.vpn.no_binary_body"))
+            return
+        profile_text = vpn_profile_store.load_profile(server.get("id") or "")
+        if not profile_text.strip():
+            logger.warning("vpn connect aborted: profile empty (id=%s)",
+                           server.get("id"))
+            self._notify(i18n.t("notify.vpn.no_profile"), "")
+            return
+        svc = server_openvpn(server)
+        mgmt_pw = keychain.ensure_vpn_mgmt_password()
+        if not vpn_privilege.check_sudoers(binary):
+            logger.info("vpn connect: sudoers missing, installing")
+            ok, code = vpn_privilege.install(
+                conf_text=vpn_privilege.runtime_conf(
+                    profile_text, pull_dns=svc.get("pull_dns", True)),
+                mgmt_password=mgmt_pw)
+            if not ok:
+                logger.warning("vpn connect aborted: install failed (%s)", code)
+                self._notify(
+                    i18n.t("notify.vpn.install_failed"),
+                    i18n.t(_VPN_INSTALL_ERR_KEYS.get(
+                        code, "vpn.err.install_generic")))
+                return
+        # 拆除屏障：NFS 先卸（hard 挂载防 Finder 卡死，与退出顺序契约
+        # 同理）→ 全部 SSH 会话停
+        logger.info("vpn connect: tearing down SSH barrier")
+        self._mounts.unmount_all()
+        self._conn.stop_all()
+
+        def _creds():
+            return (svc.get("username", ""),
+                    keychain.get_vpn_password(server))
+
+        if self._vpn_client is not None:
+            self._vpn_client.stop()
+        self._vpn_client = VpnClient(
+            full_cmd=vpn_privilege.build_full_command(binary),
+            mgmt_port=VPN_MANAGEMENT_PORT,
+            mgmt_password=mgmt_pw or None,
+            credentials=_creds,
+            on_state_change=lambda _snap: self._dirty(),
+            on_error=self._vpn_error_notify,
+        )
+        self._vpn_client.start()
+        self._dirty()
+
+    def _vpn_do_disconnect(self):
+        client = self._vpn_client
+        if client is not None:
+            client.stop()
+        self._dirty()
+
+    def _vpn_error_notify(self, kind, text):
+        self._notify(i18n.t(_VPN_ERR_KEYS.get(kind, "vpn.err.generic")),
+                     text or "")
+
+    def toggle_vpn(self, _item):
+        """菜单「连接/断开 VPN」：状态推导动作（A 类动词语法）。
+        SSH 活跃时不再踢去设置窗（真机反馈的死胡同）——原生确认框
+        一步到位：确认即拆屏障连接。"""
+        client = self._vpn_client
+        if client is not None and client.vpn.status in (
+                "connecting", "connected", "reconnecting"):
+            self._intents.vpn_disconnect()
+            return
+        server = self._vpn_configured_server()
+        if server is None:
+            self.show_preferences(None)
+            return
+        if self._ssh_any_active():
+            logger.info("vpn menu connect: ssh active, confirming")
+            # rumps.alert 第 3 个位置参数即 ok——标题/正文各占一个位置
+            # 参数，按钮文案只能走关键字（3 位置 + ok= 会 TypeError）
+            ok = rumps.alert(
+                i18n.t("notify.vpn.ssh_active"),
+                i18n.t("notify.vpn.ssh_active_body_force"),
+                ok=i18n.t("vpn.confirm_ok"))
+            if not ok:
+                return
+        self._intents.vpn_connect(server)
+
+    def toggle_ssh(self, _item):
+        """接入段 SSH 行（行即开关，2026-09-27 定稿）：VPN 活跃 → 原生
+        确认切回 SSH（断 VPN + 恢复会话与挂载——显式切换 = 主动恢复，
+        被动断开仍不回切，ADR-011 语义不变）；连接中 → 取消；已连接 →
+        停止；空闲/失败 → 发起连接。"""
+        client = getattr(self, "_vpn_client", None)
+        vpn_active = client is not None and client.vpn.status in (
+            "connecting", "connected", "reconnecting")
+        if vpn_active:
+            logger.info("ssh access row: vpn active, confirming switch")
+            # rumps.alert 第 3 个位置参数即 ok——标题/正文各占一个位置
+            # 参数，按钮文案只能走关键字（3 位置 + ok= 会 TypeError）
+            ok = rumps.alert(
+                i18n.t("mode.ssh_confirm_title"),
+                i18n.t("mode.ssh_confirm_body"),
+                ok=i18n.t("mode.switch_ok"))
+            if not ok:
+                return
+            self._intents.vpn_disconnect()
+            self._conn.start()
+            self._conn.apply_autostarts()
+            self._mounts.apply_autostarts()
+            return
+        s = self._conn.ssh.status
+        if s == "connecting":
+            self.cancel_connection(None)
+        elif s == "connected":
+            self.stop_proxy_tunnel(None)
+        else:
+            self._intents.reconnect_proxy_or_forward()
+
+    def _vpn_startup_reconcile(self):
+        """启动期收养（spec §5.4 落地到生命周期）：残留 root openvpn
+        （上次崩溃/强杀后永久占管理口者）经管理口 SIGTERM + DNS 标志
+        补跑。任何失败只记日志，绝不阻断启动。"""
+        try:
+            from vpn.openvpn_client import adopt_stale_openvpn
+            from vpn import dns_scripts
+            pw = keychain.get_vpn_mgmt_password()
+            binp = vpn_privilege.resolve_openvpn_bin()
+            if pw and binp and vpn_privilege.check_sudoers(binp):
+                adopt_stale_openvpn(pw, VPN_MANAGEMENT_PORT, timeout=1.0)
+                dns_scripts.run_reconcile()
+        except Exception:
+            logger.exception("vpn startup reconcile failed")
 
     # ── tick ─────────────────────────────────────────────
 
@@ -300,13 +588,15 @@ class MagicProxyApp(rumps.App):
     def _on_tick(self, _):
         self._stats.tick()
         self._conn.handle_retry()
+        # getattr 兜底：半构造的测试替身无此属性（_shutdown_done 同款纪律）
+        if getattr(self, "_vpn_client", None) is not None:
+            self._vpn_client.check()
 
-        # Set icon from pre-check status (matches original ordering)——
-        # 主图标永远反映代理会话（:8888 上游只依赖它）；转发会话的健康
-        # 在隧道子菜单逐条呈现
-        s = self._conn.ssh.status
+        # 主图标色（用户拍板语义）：灰=无连接 / 蓝=SSH / 绿=VPN / 黄=连接中
+        vpn_client = getattr(self, "_vpn_client", None)
+        vpn_st = vpn_client.vpn.status if vpn_client is not None else "idle"
         self._menu_builder.set_status_icon(
-            _status_color_for_connection(s, self._conn.paused))
+            _menubar_color(self._conn.ssh.status, self._conn.paused, vpn_st))
 
         key = self._menu_builder.struct_key()
         if key != self._menu_builder.last_struct_key:
@@ -396,6 +686,9 @@ class MagicProxyApp(rumps.App):
         return True
 
     def _notify(self, subtitle, message=""):
+        # 用户可见通知全部落日志（i18n 文案不进日志的纪律只约束开发
+        # 期打印——通知是诊断「用户看到了什么」的关键事实）
+        logger.info("notify: %s | %s", subtitle, message)
         rumps.notification("Magic Stack", subtitle, message)
 
     def _on_mp_saved(self):
@@ -435,6 +728,16 @@ class MagicProxyApp(rumps.App):
 
     def cancel_connection(self, _):
         self._conn.cancel()
+
+    def stop_proxy_tunnel(self, _):
+        """停止代理（菜单，原「暂停代理」改造）：取消 SSH 隧道连接
+        （-D 会话 + 转发 + 本地代理运行时 + 重试调度）——停止即终止，
+        恢复走「重新连接」。后置同步面对齐 toggle_pause（系统代理收敛
+        与防睡眠状态重算）。"""
+        self._conn.cancel()
+        self._sys_proxy.sync()
+        self._lifecycle.sync_sleep(self._conn.ssh.status, self._conn.paused,
+                             self._config.get("prevent_sleep", False))
 
     def _reload_config_or_alert(self):
         """重读磁盘配置刷新内存副本（重连 / 单会话重建共用）。
@@ -873,6 +1176,8 @@ class MagicProxyApp(rumps.App):
             self._intents.reconnect_proxy_or_forward(
                 action.get("tunnel_id"),
                 guarded=bool(action.get("if_connected")))
+        elif kind == ACTION_STOP_PROXY:
+            self._intents.stop_proxy()
         elif kind == ACTION_FORWARD_SESSION:
             tid = action.get("tunnel_id")
             if not tid:
@@ -898,6 +1203,9 @@ class MagicProxyApp(rumps.App):
         if getattr(self, "_shutdown_done", False):
             return
         self._shutdown_done = True
+        # VPN 先停（SIGTERM 优雅路径跑 DNS down 脚本——干净还原系统设置）
+        if getattr(self, "_vpn_client", None) is not None:
+            self._vpn_client.stop()
         self._mounts.unmount_all()
         self._lifecycle.quit(self._conn.stop_all)
 

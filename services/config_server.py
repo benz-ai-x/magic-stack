@@ -24,7 +24,11 @@ from tunnel import ssh_launch
 from mount import remote_setup
 from services import claude_code_setup
 from capture import capture_store
-from mpconf.config import load_config, merge_config, decorate_runtime_state
+from mpconf.config import (load_config, merge_config, decorate_runtime_state,
+                           server_openvpn)
+from vpn import privilege as vpn_privilege
+from vpn import profile as vpn_profile
+from vpn import profile_store as vpn_profile_store
 from services.balance_usage import fetch_balance
 from services.provider_probe import (
     fetch_models,
@@ -293,6 +297,14 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return data
 
+
+    def _log_auth_reject(self, method):
+        """401 拒绝一行日志（无凭证内容）：API 路径的静默拒绝曾让
+        「用户在点死页面」无从查证（真机教训，2026-09-27）。"""
+        path = urlparse(self.path).path
+        if path not in ("/", "/index.html", "/favicon.ico"):
+            logger.info("config api auth rejected: %s %s", method, path)
+
     def do_GET(self):
         if not self._valid_host():
             self._json(403, {"error": "forbidden"})
@@ -310,9 +322,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_agent_md()
             return
         if not self._valid_token():
+            self._log_auth_reject("GET")
             # GET / 的 401 返回登录页（浏览器直接打开可用）；API 路径仍 JSON
             if path in ("/", "/index.html"):
-                self._send(401, _login_html(), "text/html; charset=utf-8")
+                self._send(401, _login_html(), "text/html; charset=utf-8",
+                           extra_headers=[("Cache-Control", "no-store")])
             else:
                 self._json(401, {"error": "unauthorized"})
             return
@@ -327,6 +341,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self._valid_host() or not self._valid_token():
+            self._log_auth_reject("POST")
             self._json(401, {"error": "unauthorized"})
             return
         handler = _API_POST.get(urlparse(self.path).path)
@@ -340,6 +355,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         if not self._valid_host() or not self._valid_token():
+            self._log_auth_reject("PUT")
             self._json(401, {"error": "unauthorized"})
             return
         handler = _API_PUT.get(urlparse(self.path).path)
@@ -373,6 +389,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "Set-Cookie",
                     f"cfgsess={self.server.expected_token}; Path=/; "
                     "HttpOnly; SameSite=Strict"))
+            extra.append(("Cache-Control", "no-store"))
             self._send(200, html, "text/html; charset=utf-8", extra_headers=extra)
         except OSError:
             self._json(404, {"error": "config_ui.html not found"})
@@ -630,6 +647,125 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._json(200, {"ok": True})
 
+    # ── VPN 端点（spec §7.2：设置窗 OpenVPN 面）───────────────────
+    # profile 导入/凭证/安装是纯服务端动作（净化 + 落盘 + Keychain +
+    # 特权引导）；connect/disconnect 归 app（VpnClient 持有者）——经
+    # ConfigServer 上注入的回调 seam（vpn_connect_fn / vpn_disconnect_fn，
+    # 与 runtime_state_fn 同款注入模式）。
+
+    def _api_vpn_profile(self, data):
+        """导入 .ovpn：净化 → 0600 落盘 → 剥除清单/凭证需求回执。
+        profile_set 布尔不在此翻转——UI 按导入成功置位、随保存流持久化
+        （两阶段保存契约，spec §7.2）。"""
+        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        if error:
+            self._json(400, {"error": error})
+            return
+        content = data.get("content")
+        if not isinstance(content, str) or not content.strip():
+            self._json(400, {"error": i18n.t("vpn.err.empty_profile")})
+            return
+        clean, info = vpn_profile.sanitize_profile(content)
+        if info.error:
+            self._json(400, {"error": i18n.t("vpn.err.no_remote")})
+            return
+        if not vpn_profile_store.save_profile(tunnel.get("id") or "", clean):
+            self._json(500, {"error": i18n.t("vpn.err.save_failed")})
+            return
+        # profile_set 即时持久化（事务写径）：否则状态只活在页面内存，
+        # app 重启即清零（真机案例：换实例后徽章回「未配置」）。
+        # 只写 profile_set——auth/userpass 须用户名非空是 prepare 的校验
+        # 规则，凭证信息属保存流，这里不越权代写。
+        sid = tunnel.get("id") or ""
+        persisted = False
+        try:
+            def _mark(c):
+                for s in c.get("servers") or []:
+                    if isinstance(s, dict) and s.get("id") == sid:
+                        svc = s.get("services") if isinstance(
+                            s.get("services"), dict) else {}
+                        vpn = dict(svc.get("openvpn")
+                                   if isinstance(svc.get("openvpn"), dict)
+                                   else {})
+                        vpn["profile_set"] = True
+                        svc = dict(svc)
+                        svc["openvpn"] = vpn
+                        s["services"] = svc
+                return c
+            persisted = ConfigStateStore().update_mp(_mark)
+        except Exception:
+            logger.exception("vpn profile_set persist failed")
+        self._json(200, {
+            "ok": True,
+            "persisted": persisted,
+            "removed": [d for d, _line in info.removed],
+            "removed_lines": [line for _d, line in info.removed],
+            "needs_credentials": info.needs_credentials,
+            "missing_client_role": info.missing_client_role,
+        })
+
+    def _api_vpn_credentials(self, data):
+        """VPN 密码 → Keychain 槽（用户名是 config 字段走正常保存流）。"""
+        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        if error:
+            self._json(400, {"error": error})
+            return
+        password = data.get("password")
+        if not isinstance(password, str) or not password:
+            self._json(400, {"error": i18n.t("vpn.err.empty_password")})
+            return
+        self._json(200, {"ok": keychain.set_vpn_password(tunnel, password)})
+
+    def _api_vpn_install(self, data):
+        """安装到系统：runtime conf + sudoers + DNS 脚本一次管理员授权
+        （幂等）。pull_dns 读已保存配置——先保存再安装。"""
+        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        if error:
+            self._json(400, {"error": error})
+            return
+        text = vpn_profile_store.load_profile(tunnel.get("id") or "")
+        if not text.strip():
+            self._json(400, {"error": i18n.t("vpn.err.not_imported")})
+            return
+        pull_dns = server_openvpn(tunnel).get("pull_dns", True)
+        conf_text = vpn_privilege.runtime_conf(text, pull_dns=pull_dns)
+        ok, code = vpn_privilege.install(
+            conf_text=conf_text,
+            mgmt_password=keychain.ensure_vpn_mgmt_password())
+        self._json(200, {"ok": ok, "error_code": "" if ok else code})
+
+    def _api_vpn_connect(self, data):
+        fn = getattr(self.server, "vpn_connect_fn", None)
+        if fn is None:
+            self._json(503, {"error": "vpn not available"})
+            return
+        # windowed app 的 stderr 丢失（ThreadingMixIn handle_error 无处落）
+        # ——异常就地捕获：日志 + detail 回给 UI，真机定位不再靠猜
+        try:
+            result = fn(data.get("index"), force=data.get("force") is True)
+        except Exception:
+            logger.exception("vpn-connect handler failed")
+            import traceback
+            self._json(200, {"ok": False, "error": "exception",
+                             "detail": traceback.format_exc()[-600:]})
+            return
+        self._json(200, result)
+
+    def _api_vpn_disconnect(self, data):
+        fn = getattr(self.server, "vpn_disconnect_fn", None)
+        if fn is None:
+            self._json(503, {"error": "vpn not available"})
+            return
+        try:
+            result = fn()
+        except Exception:
+            logger.exception("vpn-disconnect handler failed")
+            import traceback
+            self._json(200, {"ok": False, "error": "exception",
+                             "detail": traceback.format_exc()[-600:]})
+            return
+        self._json(200, result)
+
     # ── 隧道解析（index 路径单一归宿，test/test-forward/NFS 共用）──
 
     @staticmethod
@@ -685,6 +821,11 @@ _API_POST = {
     "/api/probe-provider": _Handler._api_probe_provider,
     "/api/agent-setup-preview": _Handler._api_agent_setup_preview,
     "/api/setup-agent": _Handler._api_setup_agent,
+    "/api/vpn-profile": _Handler._api_vpn_profile,
+    "/api/vpn-credentials": _Handler._api_vpn_credentials,
+    "/api/vpn-install": _Handler._api_vpn_install,
+    "/api/vpn-connect": _Handler._api_vpn_connect,
+    "/api/vpn-disconnect": _Handler._api_vpn_disconnect,
 }
 _API_PUT = {
     "/api/state": _Handler._api_put_state,
