@@ -135,12 +135,35 @@ class TestConnectionActions(unittest.TestCase):
         a._vpn_client = MagicMock()
         a._vpn_client.vpn.status = "connected"
         a._intents = MagicMock()
-        with patch("rumps.alert", return_value=True):
+        with patch("rumps.alert", return_value=True) as alert:
             a.switch_mode_ssh(None)
+        args, kwargs = alert.call_args
+        self.assertLessEqual(len(args), 2,
+                             "rumps.alert 第 3 个位置参数即 ok——按钮文案"
+                             "必须走关键字（真机 8da4753 TypeError 实锤）")
+        self.assertIn("ok", kwargs)
         a._intents.vpn_disconnect.assert_called_once()
         a._conn.start.assert_called_once()
         a._conn.apply_autostarts.assert_called_once()
         a._mounts.apply_autostarts.assert_called_once()
+
+    def test_toggle_vpn_ssh_active_confirm_alert_shape(self):
+        """SSH 活跃时点「VPN 连接」：确认框形状回归——rumps.alert 的
+        第 3 个位置参数就是 ok，3 位置 + ok= 关键字在真机必炸
+        TypeError（点击无反应，2026-09-27 日志实锤）。"""
+        a = _make_app({"servers": [
+            {"id": "t-1", "name": "s1",
+             "ssh": {"host": "h1", "port": 22, "auth_type": "key"},
+             "services": {"openvpn": {"profile_set": True}}}]})
+        a._vpn_client = None
+        a._conn.any_connected = True
+        a._mounts.mount_states.return_value = ()
+        with patch("rumps.alert", return_value=False) as alert:
+            a.toggle_vpn(None)          # 取消 → 不发起连接
+        args, kwargs = alert.call_args
+        self.assertLessEqual(len(args), 2)
+        self.assertIn("ok", kwargs)
+        a._conn.restart.assert_not_called()
 
     def test_toggle_system_proxy_delegates(self):
         a = _make_app()

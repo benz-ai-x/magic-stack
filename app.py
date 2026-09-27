@@ -522,8 +522,9 @@ class MagicProxyApp(rumps.App):
             return
         if self._ssh_any_active():
             logger.info("vpn menu connect: ssh active, confirming")
+            # rumps.alert 第 3 个位置参数即 ok——标题/正文各占一个位置
+            # 参数，按钮文案只能走关键字（3 位置 + ok= 会 TypeError）
             ok = rumps.alert(
-                "Magic Stack",
                 i18n.t("notify.vpn.ssh_active"),
                 i18n.t("notify.vpn.ssh_active_body_force"),
                 ok=i18n.t("vpn.confirm_ok"))
@@ -546,7 +547,6 @@ class MagicProxyApp(rumps.App):
             return
         logger.info("mode switch to ssh: confirming")
         ok = rumps.alert(
-            "Magic Stack",
             i18n.t("mode.ssh_confirm_title"),
             i18n.t("mode.ssh_confirm_body"),
             ok=i18n.t("mode.switch_ok"))
