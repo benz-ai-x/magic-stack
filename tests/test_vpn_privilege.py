@@ -25,7 +25,7 @@ BIN = "/opt/homebrew/opt/openvpn/sbin/openvpn"
 
 class TestArgvPinning(unittest.TestCase):
     def test_argv_shape_and_space_free(self):
-        argv = build_argv(BIN, mgmt_port=17511)
+        argv = build_argv(BIN)
         self.assertEqual(argv[0], BIN)
         self.assertIn("--management-hold", argv)
         self.assertIn("--management-query-passwords", argv)
@@ -42,9 +42,9 @@ class TestArgvPinning(unittest.TestCase):
         self.assertEqual(cmd[2], BIN)
 
     def test_sudoers_rule_pins_exact_argv_and_reconcile(self):
-        rule = sudoers_rule("tester", BIN, 17511)
+        rule = sudoers_rule("tester", BIN)
         self.assertTrue(rule.startswith("tester ALL=(root) NOPASSWD: "))
-        pinned = " ".join(build_argv(BIN, 17511))
+        pinned = " ".join(build_argv(BIN))
         self.assertIn(pinned, rule)              # 逐字同源（build_argv 单一归宿）
         self.assertIn("/bin/sh " + dns_scripts.DNS_DOWN_PATH, rule)
         self.assertNotIn("*", rule)              # 零通配
@@ -60,8 +60,16 @@ class TestArgvPinning(unittest.TestCase):
         self.assertEqual(
             resolve_openvpn_bin({"MAGIC_STACK_OPENVPN": "/custom/openvpn"}),
             "/custom/openvpn")
-        # 空环境 → 三级链探测，结果必是 str（本机是否装 openvpn 不影响）
+        # 空环境 → 探测链，结果必是 str（本机是否装 openvpn 不影响）
         self.assertIsInstance(resolve_openvpn_bin({}), str)
+
+    def test_candidates_cover_both_brew_prefixes(self):
+        # Intel（/usr/local）与 ARM（/opt/homebrew）都必须在探测链里——
+        # 评审发现的兼容性坑：单硬编码 /opt/homebrew 会让一半 Mac 探不到
+        self.assertIn("/opt/homebrew/opt/openvpn/sbin/openvpn",
+                      privilege.OPENVPN_BIN_CANDIDATES)
+        self.assertIn("/usr/local/opt/openvpn/sbin/openvpn",
+                      privilege.OPENVPN_BIN_CANDIDATES)
 
 
 class TestInstallCommandFace(unittest.TestCase):
@@ -127,9 +135,7 @@ class TestInstallCommandFace(unittest.TestCase):
 
     def test_install_cancel_detected_including_localized(self):
         cancelled = subprocess.CompletedProcess(
-            ["osascript"], 1,
-            stderr="".join(chr(c) for c in (0x7528, 0x6237, 0x53D6, 0x6D88)
-                           ).encode())
+            ["osascript"], 1, stderr="用户取消了授权".encode())
         with mock.patch.object(privilege, "resolve_openvpn_bin",
                                return_value=BIN), \
              mock.patch.object(privilege.subprocess, "run",

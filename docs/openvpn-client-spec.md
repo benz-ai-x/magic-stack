@@ -138,6 +138,8 @@ root 态（经 sudoers 免密执行，argv 全量钉死）
 vpn/ ── 新域：OpenVPN 客户端
   profile.py ── .ovpn 解析/校验/净化：inline 引用核对、remote/auth 提取、
     script 类指令剥除（安全模型 §5.2 的单一归宿）；「需要凭证」布尔推导
+  profile_store.py ── profile 落盘存取（profile_set 布尔的写者）：PATHS 注册目录 +
+    0600 原子写（config_store 管线）；解析/净化归 profile.py，布尔翻转归保存流
   mgmt_client.py ── 管理口行协议客户端（纯 Python 零依赖可单测）：连接/密码握手/
     version 4 宣告/命令发送-响应匹配/实时事件行解析（>STATE/>LOG/>BYTECOUNT/
     >PASSWORD/>HOLD/>FATAL）/转义规则单一归宿
@@ -213,7 +215,8 @@ SIGTERM）→ 仍不退 SIGKILL（接受孤儿风险，靠 §5.4 收养清理兜
   "auth": "none",          // none | userpass（profile.py 从 .ovpn 推导，UI 可改）
   "username": "",          // userpass 时明文存 config（同 ssh user 先例）
   "password_set": false,   // 掩码布尔；密码在 Keychain 槽 vpn:{server_id}
-  "pull_dns": true,        // false = 注入 pull-filter ignore "dhcp-option DNS"
+  "pull_dns": true,        // false = 注入 pull-filter ignore "dhcp-option"（DNS 与
+                           //   域名搜索域一并拒收——与开关名语义一致）
   "autostart": false       // 启动即连（经 mode gate 互斥检查）
 }
 ```
@@ -233,19 +236,26 @@ SIGTERM）→ 仍不退 SIGKILL（接受孤儿风险，靠 §5.4 收养清理兜
 
 ### 5.1 sudoers 条目（v1 提权方式，复用 mount_control 骨架）
 
-新规则文件 `/etc/sudoers.d/magic-stack-openvpn`（独立于 NFS 的规则文件），条目**每台
-启用 VPN 的服务器一行，argv 全量精确匹配、零通配**：
+新规则文件 `/etc/sudoers.d/magic-stack-openvpn`（独立于 NFS 的规则文件）。条目形态
+（实施裁决）：**全局单条目 + 固定 `client.conf`**——与 §5.3「全局至多一条活跃 VPN 连接」
+不变量自洽，切换服务器 = 重装 conf（重走一次管理员授权，低频可接受）；argv 全量精确
+匹配、零通配：
 
 ```
-<user> ALL=(root) NOPASSWD: /opt/homebrew/opt/openvpn/sbin/openvpn --config /Library/Application Support/MagicStack/openvpn/<server_id>.conf --management 127.0.0.1 <VPN_MANAGEMENT_PORT> /Library/Application Support/MagicStack/openvpn/mgmt.pw --management-query-passwords --management-hold --auth-retry interact --script-security 2 --up /Library/Application Support/MagicStack/openvpn/dns-up.sh --down /Library/Application Support/MagicStack/openvpn/dns-down.sh --verb 3
+<user> ALL=(root) NOPASSWD: /opt/homebrew/opt/openvpn/sbin/openvpn --config /Library/MagicStack/openvpn/client.conf --management 127.0.0.1 <VPN_MANAGEMENT_PORT> /Library/MagicStack/openvpn/mgmt.pw --management-query-passwords --management-hold --management-forget-disconnect --auth-retry interact --script-security 2 --up /Library/MagicStack/openvpn/dns-up.sh --down /Library/MagicStack/openvpn/dns-down.sh --verb 3, /bin/sh /Library/MagicStack/openvpn/dns-down.sh
 ```
+
+> 目录用 `/Library/MagicStack/openvpn`（原案 "Application Support"）——sudoers 命令
+> 匹配按空白分词，路径含空格要引号转义整类脆断；无空格根上消除。末尾逗号清单第二项
+> 是崩溃 reconcile 补跑 dns-down 的授权（§5.4，实施裁决取并入形态）。
 
 与 NFS 条目的**本质差异必须遵守**：`up` 指令使「config 内容可控 = root 任意执行」，
 所以——
 
-1. **参数零通配**（sudoers glob 可匹配空格 = 注入面；本条目连端口号都固定）。
-2. **runtime conf 目录 root-owned、用户不可写**（`/Library/Application Support/
-   MagicStack/openvpn/`，安装 sudoers 的同一次管理员授权里创建并 chown root）。profile
+1. **参数零通配**（sudoers glob 可匹配空格 = 注入面；本条目连端口号都固定——
+   端口是 `shared/defaults.VPN_MANAGEMENT_PORT` 安全不变量，不参数化）。
+2. **runtime conf 目录 root-owned、用户不可写**（`/Library/MagicStack/openvpn/`，
+   安装 sudoers 的同一次管理员授权里创建并 chown root）。profile
    变更重新生成 conf 时再次走 osascript 授权（低频操作，UX 同 NFS「一键安装」）。
 3. **profile 净化是第二道闸**：`vpn/profile.py` 剥除一切脚本/执行类指令（`up`、`down`、
    `script-security`、`iproute`、`route-up`、`down-pre`、`tls-verify` 等），导入时对被
@@ -273,12 +283,11 @@ SIGTERM）→ 仍不退 SIGKILL（接受孤儿风险，靠 §5.4 收养清理兜
 ### 5.4 崩溃收养与清理
 
 - openvpn 自身改的路由/tun：SIGTERM 优雅退出自清；kill -9 后内核回收（残留 utun 无害）。
-- DNS（up 脚本改的）：`dns-up.sh` 快照落 `/Library/Application Support/MagicStack/
-  openvpn/dns-backup.json` + 建标志文件；`dns-down.sh` 恢复 + 删标志。app 每次启动与
-  VPN 断开后 reconcile：标志文件在 = down 没跑过 → 经 sudoers 补跑 `dns-down.sh`？
-  （它不在 sudoers 条目里）→ **实施注意**：dns-down.sh 需要自己的 sudoers 行
-  （`<user> ALL=(root) NOPASSWD: /bin/sh /Library/…/dns-down.sh`，脚本本体 root-owned
-  用户不可写），或并入 openvpn 条目清单。spec 取前者：独立一行，脚本 root-owned。
+- DNS（up 脚本改的）：`dns-up.sh` 快照落 `/Library/MagicStack/openvpn/dns-backup.txt`
+  （三行平文本：服务名 / DNS / 搜索域——sh 侧免 JSON 解析）+ 建标志文件；`dns-down.sh`
+  恢复 + 删标志。app 每次启动与 VPN 断开后 reconcile：标志文件在 = down 没跑过 →
+  经 sudoers 补跑。**实施裁决**：补跑授权并入 openvpn 条目的逗号清单
+  （`/bin/sh <dns-down.sh>`，脚本本体 root-owned 用户不可写），不另开独立行。
 - root 孤儿 openvpn：固定端口 + Keychain 稳定密码 → 启动时连管理口 `signal SIGTERM`
   收尸（Tunnelblick 用「端口编码在日志文件名里」解决同一问题，我们的固定端口方案更简）。
 
@@ -378,9 +387,10 @@ sudoers 安装是保存后的显式「安装到系统」动作（管理员授权
 
 ## 8. 依赖探测与安装引导
 
-- 二进制三级链（镜像 `capture/resources.py`）：env `MAGIC_STACK_OPENVPN` →
-  `$(brew --prefix)/opt/openvpn/sbin/openvpn`（**brew 装在 sbin，默认 PATH 不含**，
-  `which` 探不到——已核实的坑）→ PATH 兜底。
+- 二进制探测链（镜像 `capture/resources.py`）：env `MAGIC_STACK_OPENVPN` → Homebrew
+  双 prefix 常量 `/opt/homebrew`（ARM）/ `/usr/local`（Intel）下的
+  `opt/openvpn/sbin/openvpn`（**brew 装在 sbin，默认 PATH 不含**，`which` 探不到——
+  已核实的坑）→ MacPorts `/opt/local/sbin` → PATH 兜底。
 - 未安装：连接动作降级为提示 `brew install openvpn`（tomlkit 缺席提示安装的既有
   模式，ADR-010 M4）；设置窗 OpenVPN 卡给安装引导文案。
 - 最低版本：2.6（tls-version-min/data-ciphers 默认现代值；管理协议 ≥5）。2.7.7 为
@@ -456,7 +466,7 @@ sudoers 安装是保存后的显式「安装到系统」动作（管理员授权
 | 凭据错默认致命退出 | `--auth-retry interact` 写进 argv 模板 |
 | EXITING 误当已断开 | 状态机显式等进程退出 + 退出码（§3.3） |
 | 版本碎片（2.4–2.7） | `version 4` 宣告；STATE 解析容忍空段；2.6 为最低支持线 |
-| brew sbin 不在 PATH | 三级链探测 brew prefix（§8） |
+| brew sbin 不在 PATH | 探测链双 prefix（ARM/Intel）+ PATH 兜底（§8） |
 
 ---
 
@@ -465,8 +475,7 @@ sudoers 安装是保存后的显式「安装到系统」动作（管理员授权
 1. 菜单组名与图标（「VPN 网络」vs 并入「代理」组做模式切换器）——随 M2 的 UX 打磨定。
 2. 私钥口令的 Keychain 槽位归属（独立槽 vs 并入 `vpn:{id}`）。
 3. `pull_dns=false` 之外是否暴露更细的 split-tune（`route-nopull` + 手动 route 列表）。
-4. dns-down.sh 的 sudoers 行形态（独立行 vs 并入 openvpn 条目清单）。
-5. 是否在「检测服务」卡里加本地 openvpn 安装态（当前卡只测远端 server）。
+4. 是否在「检测服务」卡里加本地 openvpn 安装态（当前卡只测远端 server）。
 
 ---
 

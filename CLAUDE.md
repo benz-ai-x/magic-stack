@@ -131,6 +131,10 @@ vpn/ ── OpenVPN 客户端域（spec 与调研：docs/openvpn-client-spec.md�
   profile.py ── .ovpn 解析/校验/净化单一归宿：脚本/管理类指令剥除
     （root 执行面第二道闸）+ auth-user-pass 改查询式 + inline 块整段
     跳过（块内指令形状的行绝不误伤）
+  profile_store.py ── profile 落盘存取（profile_set 布尔的写者）：
+    PATHS 注册目录（vpn_profiles_dir）+ 0600 原子写（config_store 管线，
+    测试 patch.dict 单点重定向）；解析/净化归 profile.py，布尔翻转归
+    保存流（M2 接线）
   mgmt_client.py ── management interface 行协议客户端（纯 Python 零
     依赖，PyPI 封装库全弃维）：密码握手 + version 4 宣告（≤3 静默）+
     命令-响应/实时事件分发（>STATE/>LOG/>BYTECOUNT/>PASSWORD/>FATAL）+

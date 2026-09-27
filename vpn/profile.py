@@ -53,6 +53,7 @@ class ProfileInfo:
     missing_client_role: bool = False                 # 无 client/pull——push 不生效
     removed: list = field(default_factory=list)       # [(directive, 原始行)]
     error: str = ""                                   # 非空 = 不可用（英文码，UI 层映射）
+    sanitized: str = ""                               # 解析产出文本（sanitize=True 时为净化后）
 
     @property
     def needs_credentials(self) -> bool:
@@ -155,7 +156,7 @@ def parse_profile(text: str, *, sanitize: bool = False) -> ProfileInfo:
         info.error = "no_remote"
     # client/pull 缺失只告警不拒绝（静态 key 点对点 profile 合法）
     info.missing_client_role = not has_role
-    info._sanitized = "\n".join(out_lines) + ("\n" if out_lines else "")
+    info.sanitized = "\n".join(out_lines) + ("\n" if out_lines else "")
     return info
 
 
@@ -163,4 +164,4 @@ def sanitize_profile(text: str) -> tuple:
     """净化入口：返回 (净化后文本, ProfileInfo)。剥除脚本/管理类指令、
     auth-user-pass 改查询式；removed 逐条记录供导入 UI 告警确认。"""
     info = parse_profile(text, sanitize=True)
-    return info._sanitized, info
+    return info.sanitized, info

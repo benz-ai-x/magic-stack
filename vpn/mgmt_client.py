@@ -25,13 +25,6 @@ logger = logging.getLogger("magic-proxy.vpn-mgmt")
 
 PROTOCOL_VERSION = 4
 
-# >STATE 状态名全集（manage.c 2.6/2.7 逐一核对）；EXITING 后必须等进程退出
-STATE_NAMES = frozenset({
-    "CONNECTING", "WAIT", "AUTH", "GET_CONFIG", "ASSIGN_IP", "ADD_ROUTES",
-    "CONNECTED", "RECONNECTING", "EXITING", "RESOLVE", "TCP_CONNECT",
-    "AUTH_PENDING",
-})
-
 
 class ManagementError(Exception):
     """管理口握手/通信失败（含连接被拒/超时/密码错）。"""
@@ -174,12 +167,11 @@ class ManagementClient:
         self._reader = threading.Thread(
             target=self._read_loop, args=(sock,), daemon=True)
         self._reader.start()
-        # version 4：≤3 的宣告无响应（文档明示），故 fire-and-forget——
-        # 唯一目的是解锁 2.5+/2.6+/2.7 的客户端能力闸门
-        try:
-            self._send_line(f"version {PROTOCOL_VERSION}")
-        except OSError as exc:
-            raise ManagementError(f"version send failed: {exc}") from exc
+        # version 4 宣告：≤3 的服务端静默、≥4 回 SUCCESS——统一走等待路径
+        # 消费掉这条响应。send_and_wait 的应答按到达序配对，若把 version
+        # 的 SUCCESS 留在途，它会串位配到下一条命令（真机竞态，评审抓出）；
+        # 老服务端不回 → 超时无害。
+        self.send_and_wait(f"version {PROTOCOL_VERSION}", timeout=1.0)
         logger.info("management interface attached (%s:%s)", host, port)
 
     def _handshake(self, sock) -> bytes:

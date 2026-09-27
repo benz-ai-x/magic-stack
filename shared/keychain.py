@@ -7,6 +7,11 @@ briefly visible in `ps` (#40).
 Security 缺失（Linux 容器）时模块仍可导入：Security=None，公开函数的
 全吞异常兜底（keychain must never raise to UI）把 None 解引用转成
 False/""——Docker 路径本就不调用这些函数。
+
+槽位模型：一切条目都是 (SERVICE, account) 二元组。_slot_add/_slot_get/
+_slot_delete 是仅有的三条 SecItem 原语（评审去重：此前 set/get/delete
+在 password/sudo/vpn 三族里是逐份拷贝）；各槽位函数只负责账户名推导与
+守卫语义（host 守卫、legacy 回退读、NotFound 容忍）。
 """
 from __future__ import annotations  # PEP 604 注解惰性求值——3.9 下界兼容（#71 S15）
 
@@ -47,33 +52,66 @@ def _legacy_account(server: dict) -> str:
     return f"{user}@{host}:{port}"
 
 
-def _base_query(server: dict, account: str | None = None) -> dict:
+def _slot_query(account: str) -> dict:
     return {
         Security.kSecClass: Security.kSecClassGenericPassword,
         Security.kSecAttrService: SERVICE,
-        Security.kSecAttrAccount: account or _account(server),
+        Security.kSecAttrAccount: account,
     }
 
 
-def set_password(tunnel: dict, password: str) -> bool:
-    if not _ssh_host(tunnel):
-        return False
+# ── 槽位三原语（唯一的 SecItem 触点）─────────────────────────────
+
+def _slot_add(account: str, password: str, label: str) -> bool:
+    """写入槽位（先删后加保 -U 语义）。失败只记状态码，密码绝不进日志。"""
     try:
-        # Replace any existing entry so -U semantics (update-in-place) hold.
-        final_account = _account(tunnel)
-        Security.SecItemDelete(_base_query(tunnel, final_account))
-        attrs = _base_query(tunnel, final_account)
+        Security.SecItemDelete(_slot_query(account))
+        attrs = _slot_query(account)
         attrs[Security.kSecValueData] = password.encode("utf-8")
         status = Security.SecItemAdd(attrs, None)
         ok = status[0] == Security.errSecSuccess if isinstance(status, tuple) \
             else status == Security.errSecSuccess
         if not ok:
-            # Never log the password; the query attrs hold no secret value.
-            logger.warning("Keychain set failed: SecItemAdd status %s", status)
+            logger.warning("Keychain %s set failed: status %s", label, status)
         return ok
     except Exception as e:  # noqa: BLE001 — keychain must never raise to UI
-        logger.warning("Keychain set failed: %s", type(e).__name__)
+        logger.warning("Keychain %s set failed: %s", label, type(e).__name__)
         return False
+
+
+def _slot_get(account: str) -> str:
+    """读槽位；缺席/失败一律 ''。"""
+    try:
+        query = _slot_query(account)
+        query[Security.kSecReturnData] = True
+        query[Security.kSecMatchLimit] = Security.kSecMatchLimitOne
+        status, data = Security.SecItemCopyMatching(query, None)
+        if status == Security.errSecSuccess and data is not None:
+            return bytes(data).decode("utf-8")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Keychain get failed: %s", type(e).__name__)
+    return ""
+
+
+def _slot_delete(account: str, label: str) -> bool:
+    """删槽位；NotFound（条目本就不存在）视为成功，其他非零如实上报。"""
+    try:
+        status = Security.SecItemDelete(_slot_query(account))
+        if status not in (0, getattr(Security, "errSecItemNotFound", -25300)):
+            logger.warning("Keychain %s delete status %s", label, status)
+            return False
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Keychain %s delete failed: %s", label, type(e).__name__)
+        return False
+
+
+# ── SSH 登录密码槽（tunnel:{id}）──────────────────────────────────
+
+def set_password(tunnel: dict, password: str) -> bool:
+    if not _ssh_host(tunnel):
+        return False
+    return _slot_add(_account(tunnel), password, "set")
 
 
 def get_password(server: dict) -> str:
@@ -83,27 +121,16 @@ def get_password(server: dict) -> str:
     legacy = _legacy_account(server)
     if legacy not in accounts:
         accounts.append(legacy)  # 迁移期回退读（issue #8）
-    try:
-        for account in accounts:
-            query = _base_query(server, account)
-            query[Security.kSecReturnData] = True
-            query[Security.kSecMatchLimit] = Security.kSecMatchLimitOne
-            status, data = Security.SecItemCopyMatching(query, None)
-            if status == Security.errSecSuccess and data is not None:
-                return bytes(data).decode("utf-8")
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain get failed: %s", type(e).__name__)
+    for account in accounts:
+        value = _slot_get(account)
+        if value:
+            return value
     return ""
 
 
 def delete_legacy_password(server: dict) -> bool:
     """仅清 legacy 账户（user@host:port）——re-pin 收敛用，不动 id 账户。"""
-    try:
-        Security.SecItemDelete(_base_query(server, _legacy_account(server)))
-        return True
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain legacy delete failed: %s", type(e).__name__)
-        return False
+    return _slot_delete(_legacy_account(server), "legacy")
 
 
 def delete_password(server: dict) -> bool:
@@ -111,18 +138,9 @@ def delete_password(server: dict) -> bool:
     if not _ssh_host(server):
         return True
     ok = True
-    try:
-        for account in {_account(server), _legacy_account(server)}:
-            # 区分状态码（#69 R7）：NotFound（条目本就不存在）视为成功；
-            # 其他非零状态（真实失败）如实上报，不恒报 True
-            status = Security.SecItemDelete(_base_query(server, account))
-            if status not in (0, getattr(Security, "errSecItemNotFound", -25300)):
-                logger.warning("Keychain delete status %s", status)
-                ok = False
-        return ok
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain delete failed: %s", type(e).__name__)
-        return False
+    for account in {_account(server), _legacy_account(server)}:
+        ok = _slot_delete(account, "delete") and ok
+    return ok
 
 
 # ── 远程 sudo 密码槽（ADR-007：NFS 一键安装的远程提权凭据）────────
@@ -136,45 +154,18 @@ def _sudo_account(server: dict) -> str:
 def set_sudo_password(server: dict, password: str) -> bool:
     if not _ssh_host(server):
         return False
-    try:
-        account = _sudo_account(server)
-        Security.SecItemDelete(_base_query(server, account))
-        attrs = _base_query(server, account)
-        attrs[Security.kSecValueData] = password.encode("utf-8")
-        status = Security.SecItemAdd(attrs, None)
-        ok = status[0] == Security.errSecSuccess if isinstance(status, tuple) \
-            else status == Security.errSecSuccess
-        if not ok:
-            logger.warning("Keychain sudo set failed: status %s", status)
-        return ok
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain sudo set failed: %s", type(e).__name__)
-        return False
+    return _slot_add(_sudo_account(server), password, "sudo")
 
 
 def get_sudo_password(server: dict) -> str:
     if not _ssh_host(server):
         return ""
-    try:
-        query = _base_query(server, _sudo_account(server))
-        query[Security.kSecReturnData] = True
-        query[Security.kSecMatchLimit] = Security.kSecMatchLimitOne
-        status, data = Security.SecItemCopyMatching(query, None)
-        if status == Security.errSecSuccess and data is not None:
-            return bytes(data).decode("utf-8")
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain sudo get failed: %s", type(e).__name__)
-    return ""
+    return _slot_get(_sudo_account(server))
 
 
 def delete_sudo_password(server: dict) -> bool:
     """删除远程 sudo 密码槽（服务器删除时随 all 清理）。"""
-    try:
-        Security.SecItemDelete(_base_query(server, _sudo_account(server)))
-        return True
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain sudo delete failed: %s", type(e).__name__)
-        return False
+    return _slot_delete(_sudo_account(server), "sudo")
 
 
 # ── OpenVPN 凭证槽（docs/openvpn-client-spec.md §5.5）─────────────
@@ -186,84 +177,28 @@ def _vpn_account(server: dict) -> str:
 
 
 def set_vpn_password(server: dict, password: str) -> bool:
-    try:
-        account = _vpn_account(server)
-        Security.SecItemDelete(_base_query(server, account))
-        attrs = _base_query(server, account)
-        attrs[Security.kSecValueData] = password.encode("utf-8")
-        status = Security.SecItemAdd(attrs, None)
-        ok = status[0] == Security.errSecSuccess if isinstance(status, tuple) \
-            else status == Security.errSecSuccess
-        if not ok:
-            logger.warning("Keychain vpn set failed: status %s", status)
-        return ok
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain vpn set failed: %s", type(e).__name__)
-        return False
+    return _slot_add(_vpn_account(server), password, "vpn")
 
 
 def get_vpn_password(server: dict) -> str:
-    try:
-        query = _base_query(server, _vpn_account(server))
-        query[Security.kSecReturnData] = True
-        query[Security.kSecMatchLimit] = Security.kSecMatchLimitOne
-        status, data = Security.SecItemCopyMatching(query, None)
-        if status == Security.errSecSuccess and data is not None:
-            return bytes(data).decode("utf-8")
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain vpn get failed: %s", type(e).__name__)
-    return ""
+    return _slot_get(_vpn_account(server))
 
 
 def delete_vpn_password(server: dict) -> bool:
     """删除服务器 VPN 密码槽（服务器删除时清理）。"""
-    try:
-        status = Security.SecItemDelete(_base_query(server, _vpn_account(server)))
-        return status in (0, getattr(Security, "errSecItemNotFound", -25300))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain vpn delete failed: %s", type(e).__name__)
-        return False
+    return _slot_delete(_vpn_account(server), "vpn")
 
 
-# 管理口密码槽（全局——不绑服务器；无 server 语义，独立小函数族）
+# 管理口密码槽（全局——不绑服务器）
 VPN_MGMT_ACCOUNT = "vpn-mgmt"
 
 
-def _mgmt_query() -> dict:
-    return {
-        Security.kSecClass: Security.kSecClassGenericPassword,
-        Security.kSecAttrService: SERVICE,
-        Security.kSecAttrAccount: VPN_MGMT_ACCOUNT,
-    }
-
-
 def set_vpn_mgmt_password(password: str) -> bool:
-    try:
-        Security.SecItemDelete(_mgmt_query())
-        attrs = _mgmt_query()
-        attrs[Security.kSecValueData] = password.encode("utf-8")
-        status = Security.SecItemAdd(attrs, None)
-        ok = status[0] == Security.errSecSuccess if isinstance(status, tuple) \
-            else status == Security.errSecSuccess
-        if not ok:
-            logger.warning("Keychain vpn-mgmt set failed: status %s", status)
-        return ok
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain vpn-mgmt set failed: %s", type(e).__name__)
-        return False
+    return _slot_add(VPN_MGMT_ACCOUNT, password, "vpn-mgmt")
 
 
 def get_vpn_mgmt_password() -> str:
-    try:
-        query = _mgmt_query()
-        query[Security.kSecReturnData] = True
-        query[Security.kSecMatchLimit] = Security.kSecMatchLimitOne
-        status, data = Security.SecItemCopyMatching(query, None)
-        if status == Security.errSecSuccess and data is not None:
-            return bytes(data).decode("utf-8")
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Keychain vpn-mgmt get failed: %s", type(e).__name__)
-    return ""
+    return _slot_get(VPN_MGMT_ACCOUNT)
 
 
 def ensure_vpn_mgmt_password() -> str:

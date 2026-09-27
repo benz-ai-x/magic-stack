@@ -82,6 +82,9 @@ _HAN_WHITELIST = {
     "mount/coordinator.py": "M4：挂载错误文案",
     "mount/mount_control.py": "M4：挂载控制错误",
     "mount/remote_setup.py": "M4：远程安装提示",
+    # 检测探针非用户可见文案：osascript 管理员授权取消的 stderr 匹配串
+    # （随系统语言本地化；mount_control 同款串在其条目内）
+    "vpn/privilege.py": "常驻：osascript 取消检测探针（非 UI 文案，不进 catalog）",
 }
 
 
