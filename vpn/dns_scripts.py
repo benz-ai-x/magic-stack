@@ -36,7 +36,7 @@ MARKER_PATH = f"{SYSTEM_DIR}/dns-active"
 BACKUP_PATH = f"{SYSTEM_DIR}/dns-backup.txt"
 LOG_PATH = f"{SYSTEM_DIR}/dns.log"
 # 语义版本：脚本行为或 runtime conf 组成变更时 bump——磁盘旧版触发重装
-SCRIPTS_VERSION = "2026-09-28.1"
+SCRIPTS_VERSION = "2026-09-28.2"
 
 # IPv6 reject 路由目标：全球单播聚合前缀 2000::/3（黑名单整个公网 v6，
 # ULA/链路本地不受影响）
@@ -54,7 +54,8 @@ set -u
 MARKER="__MARKER__"
 BACKUP="__BACKUP__"
 LOG="__LOG__"
-log() { printf '%s %s\n' "$(date '+%F %T')" "up: $*" >> "$LOG"; }
+log() { printf '%s %s\n' "$(/bin/date '+%F %T')" "up: $*" >> "$LOG"; }
+log "invoked (PATH='$PATH' dev='$dev' script_type='$script_type')"
 [ -f "$MARKER" ] && { log "marker present, skip (idempotent)"; exit 0; }
 dns=""
 search=""
@@ -70,23 +71,37 @@ while :; do
 done
 log "collected dns='$dns' search='$search'"
 [ -z "$dns" ] && { log "no dhcp-option DNS pushed, nothing to apply"; exit 0; }
-iface=$(route -n get default 2>/dev/null | awk '/interface:/ {print $2; exit}')
+# Default-route probe (2026-09-28 real-machine finding: "route get
+# default" can come up empty in the instant right after the tunnel comes
+# up -- configd re-evaluation window; absolute paths guard against a
+# script env whose PATH lacks sbin; raw output logged instead of
+# swallowed; 3 retries ride out the transient).
+iface=""
+try=0
+while [ $try -lt 3 ]; do
+  raw=$(/sbin/route -n get default 2>&1)
+  iface=$(printf '%s\n' "$raw" | /usr/bin/awk '/interface:/ {print $2; exit}')
+  [ -n "$iface" ] && break
+  try=$((try+1))
+  log "default-route probe #$try" "empty, raw: $(printf '%s' "$raw" | /usr/bin/tr '\n' ';')"
+  /bin/sleep 1
+done
 log "default-route iface='$iface'"
-[ -z "$iface" ] && { log "no default route, abort"; exit 0; }
-svc=$(networksetup -listallhardwareports 2>/dev/null | awk -v i="$iface" '
+[ -z "$iface" ] && { log "no default route after retries, abort"; exit 0; }
+svc=$(/usr/sbin/networksetup -listallhardwareports 2>/dev/null | /usr/bin/awk -v i="$iface" '
   /^Hardware Port: / {hp=substr($0, 16)}
   /^Device: / {if ($2 == i) {print hp; exit}}')
 log "service='$svc'"
 [ -z "$svc" ] && { log "iface maps to no hardware service, abort"; exit 0; }
-cur_dns=$(networksetup -getdnsservers "$svc" 2>/dev/null)
-cur_search=$(networksetup -getsearchdomains "$svc" 2>/dev/null)
+cur_dns=$(/usr/sbin/networksetup -getdnsservers "$svc" 2>/dev/null)
+cur_search=$(/usr/sbin/networksetup -getsearchdomains "$svc" 2>/dev/null)
 printf '%s\n%s\n%s\n' "$svc" "$cur_dns" "$cur_search" > "$BACKUP.tmp" && mv "$BACKUP.tmp" "$BACKUP"
-networksetup -setdnsservers "$svc" $dns && log "applied dns '$dns' to '$svc'" \
+/usr/sbin/networksetup -setdnsservers "$svc" $dns && log "applied dns '$dns' to '$svc'" \
   || log "setdnsservers FAILED"
-if [ -n "$search" ]; then networksetup -setsearchdomains "$svc" $search; fi
+if [ -n "$search" ]; then /usr/sbin/networksetup -setsearchdomains "$svc" $search; fi
 # IPv6 reject route: v6 unreachable immediately -> dual-stack apps fall
 # back to IPv4 (through the tunnel) instantly
-route -n add -inet6 -reject __V6BLOCK__ >/dev/null 2>&1 \
+/sbin/route -n add -inet6 -reject __V6BLOCK__ >/dev/null 2>&1 \
   && log "ipv6 reject route added (__V6BLOCK__)" \
   || log "ipv6 reject route add failed (exists?)"
 touch "$MARKER"
@@ -109,14 +124,15 @@ set -u
 MARKER="__MARKER__"
 BACKUP="__BACKUP__"
 LOG="__LOG__"
-log() { printf '%s %s\n' "$(date '+%F %T')" "down: $*" >> "$LOG"; }
+log() { printf '%s %s\n' "$(/bin/date '+%F %T')" "down: $*" >> "$LOG"; }
+log "invoked (PATH='$PATH' ppid='$PPID')"
 [ -f "$MARKER" ] && log "marker present" || exit 0
-others=$(pgrep -x openvpn 2>/dev/null | grep -vw "$PPID" | head -5)
+others=$(/usr/bin/pgrep -x openvpn 2>/dev/null | /usr/bin/grep -vw "$PPID" | /usr/bin/head -5)
 if [ -n "$others" ]; then
   log "another openvpn alive (pids: $others), skip restore"
   exit 0
 fi
-route -n delete -inet6 -reject __V6BLOCK__ >/dev/null 2>&1 \
+/sbin/route -n delete -inet6 -reject __V6BLOCK__ >/dev/null 2>&1 \
   && log "ipv6 reject route withdrawn" || true
 [ -f "$BACKUP" ] || { rm -f "$MARKER"; log "no backup, marker removed"; exit 0; }
 svc=$(sed -n 1p "$BACKUP")
@@ -125,8 +141,8 @@ cur_search=$(sed -n 3p "$BACKUP")
 restore() {
   _svc="$1"; _cur="$2"; _setter="$3"
   case "$_cur" in
-    ""|*"There aren't any"*|*"There are no"*) networksetup "$_setter" "$_svc" "Empty" ;;
-    *) networksetup "$_setter" "$_svc" $_cur ;;
+    ""|*"There aren't any"*|*"There are no"*) /usr/sbin/networksetup "$_setter" "$_svc" "Empty" ;;
+    *) /usr/sbin/networksetup "$_setter" "$_svc" $_cur ;;
   esac
 }
 restore "$svc" "$cur_dns" -setdnsservers
