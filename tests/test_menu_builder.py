@@ -292,8 +292,8 @@ class TestMultiActiveTunnels(unittest.TestCase):
         self.assertEqual(mb.refs["launch_login"]._menuitem.state(), 0)
 
     def test_mode_section_exclusive_selection(self):
-        """接入模式段（重设计 ②）：互斥单选 ✓；VPN 激活时反转 + 多出
-        「断开 VPN」行。"""
+        """接入段（重设计 ②，2026-09-27 语义纠偏）：选择 SSH/VPN 连接，
+        互斥单选 ✓；VPN 激活时反转 + 多出「断开 VPN」行。"""
         app = MagicMock()
         added = []
         app.menu.add.side_effect = lambda i: added.append(i)
@@ -301,9 +301,9 @@ class TestMultiActiveTunnels(unittest.TestCase):
         mb._build_mode_section()
         rows = [i for i in added if hasattr(i, "title")]
         states = {r.title: r._menuitem.state() for r in rows[1:]}
-        self.assertEqual(rows[0].title, "接入模式")
-        self.assertEqual(states["SSH 隧道（代理 + 转发 + 挂载）"], 1)
-        self.assertEqual(states["VPN（OpenVPN 全隧道）"], 0)
+        self.assertEqual(rows[0].title, "接入")
+        self.assertEqual(states["SSH 连接"], 1)
+        self.assertEqual(states["VPN 连接"], 0)
         self.assertEqual(len(rows), 3)             # 无断开行（VPN 未激活）
 
         added.clear()
@@ -311,8 +311,8 @@ class TestMultiActiveTunnels(unittest.TestCase):
         mb2._build_mode_section()
         rows2 = [i for i in added if hasattr(i, "title")]
         states2 = {r.title: r._menuitem.state() for r in rows2[1:]}
-        self.assertEqual(states2["SSH 隧道（代理 + 转发 + 挂载）"], 0)
-        self.assertEqual(states2["VPN（OpenVPN 全隧道）"], 1)
+        self.assertEqual(states2["SSH 连接"], 0)
+        self.assertEqual(states2["VPN 连接"], 1)
         self.assertTrue(any("断开 VPN" in r.title for r in rows2))
 
     def test_status_line_appends_forward_count(self):

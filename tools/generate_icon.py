@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Generate the macOS menu-bar status icons from the production app icon.
 
-Produces three 256 px PNGs:
-  - MenubarIcon.png        — full-color  (connected)
+Produces four 256 px PNGs:
+  - MenubarIcon.png        — full-color  (SSH connected — the icon body
+                             is blue, i.e. the blue=SSH semantics)
+  - MenubarIcon-green.png  — green       (VPN connected)
   - MenubarIcon-yellow.png — yellow      (connecting / paused)
   - MenubarIcon-gray.png   — grayscale   (disconnected)
 
@@ -13,6 +15,7 @@ from PIL import Image
 
 ICON_SOURCE = "icons/magic-ai-router-macos-v2.icns"
 OUTPUT_COLOR = "assets/MenubarIcon.png"
+OUTPUT_GREEN = "assets/MenubarIcon-green.png"
 OUTPUT_YELLOW = "assets/MenubarIcon-yellow.png"
 OUTPUT_GRAY = "assets/MenubarIcon-gray.png"
 SIZE = 256
@@ -46,6 +49,16 @@ def main():
                          Image.fromarray(gray_ch), Image.fromarray(alpha))
                 ).save(OUTPUT_GRAY)
     print(f"Created {OUTPUT_GRAY} ({SIZE}x{SIZE} grayscale)")
+
+    # Green (VPN connected): luminance mapped into system-green tones
+    # (systemGreen ≈ #34C759 → r 0.25 / g 1.0 / b 0.45 of luminance)
+    gr = (lum * 0.25).clip(0, 255).astype(np.uint8)
+    gg = lum.astype(np.uint8)
+    gb = (lum * 0.45).clip(0, 255).astype(np.uint8)
+    Image.merge("RGBA", (Image.fromarray(gr), Image.fromarray(gg),
+                         Image.fromarray(gb), Image.fromarray(alpha))
+                ).save(OUTPUT_GREEN)
+    print(f"Created {OUTPUT_GREEN} ({SIZE}x{SIZE} green)")
 
     # Yellow: map luminance into warm yellow tones
     yr = lum.astype(np.uint8)

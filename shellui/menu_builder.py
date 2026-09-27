@@ -19,28 +19,38 @@ from util import resource_path as _resource_path, truncate as _truncate
 
 logger = logging.getLogger("magic-proxy.menu")
 
-STATUS_ICON_RESOURCE = "MenubarIcon.png"
+STATUS_ICON_RESOURCE = "MenubarIcon.png"          # 图标本体即蓝底（蓝=SSH）
+STATUS_ICON_GREEN_RESOURCE = "MenubarIcon-green.png"
 STATUS_ICON_GRAY_RESOURCE = "MenubarIcon-gray.png"
 STATUS_ICON_YELLOW_RESOURCE = "MenubarIcon-yellow.png"
 STATUS_STATE_STYLE = {
-    "green":  ("systemBlueColor", "🔵"),
+    "blue":   ("systemBlueColor", "🔵"),
+    "green":  ("systemGreenColor", "🟢"),
     "yellow": ("systemYellowColor", "🟡"),
     "gray":   ("systemGrayColor", "⚪"),
 }
 _ICON_RESOURCE_FOR_KEY = {
-    "green":  STATUS_ICON_RESOURCE,
+    "blue":   STATUS_ICON_RESOURCE,
+    "green":  STATUS_ICON_GREEN_RESOURCE,
     "yellow": STATUS_ICON_YELLOW_RESOURCE,
     "gray":   STATUS_ICON_GRAY_RESOURCE,
 }
 
 
-def _status_color_for_connection(status, paused=False):
-    if paused:
-        return "yellow"
-    if status == "connected":
+def _menubar_color(ssh_status, paused, vpn_status):
+    """菜单栏主图标色（用户拍板语义 2026-09-27）：灰 = SSH/VPN 均未
+    连接，蓝 = SSH 已连接，绿 = VPN 已连接，黄 = 连接中/暂停。
+
+    互斥模型下 SSH 与 VPN 不同时活跃；VPN 收尾期（exiting）与
+    connecting 同档黄。SSH error = 未连接 → 灰（详情进菜单）。"""
+    if vpn_status == "connected":
         return "green"
-    if status == "connecting":
+    if vpn_status in ("connecting", "reconnecting", "exiting"):
         return "yellow"
+    if paused or ssh_status == "connecting":
+        return "yellow"
+    if ssh_status == "connected":
+        return "blue"
     return "gray"
 
 
@@ -389,9 +399,10 @@ class MenuBuilder:
     # ── full build ────────────────────────────────────────
 
     def build(self):
-        """四段结构（2026-09-27 重设计）：状态总览（SSH/VPN 同框）→
-        接入模式（互斥单选）→ SSH 模式段（VPN 模式时置灰）→ AI ▸ →
-        尾部（选项收编：高频开关直陈，配置进设置窗）。"""
+        """四段结构（2026-09-27 重设计，同日语义纠偏）：状态总览
+        （SSH/VPN 同框）→ 接入（SSH/VPN 连接互斥单选）→ SSH 功能段
+        （VPN 连接时置灰）→ AI ▸ → 尾部（选项收编：高频开关直陈，
+        配置进设置窗）。"""
         app = self._app
         app.menu.clear()
         self.refs = {}
@@ -453,13 +464,13 @@ class MenuBuilder:
 
 
 
-    # ── 接入模式段（重设计 ②）：互斥单选一等公民 ──────────────
+    # ── 接入段（重设计 ②）：SSH/VPN 连接互斥单选一等公民 ────────
 
     def _build_mode_section(self):
-        """接入模式（互斥单选，B 类 ✓）：SSH 全家桶 vs VPN 二选一。
-        点未选中模式 = 切换（SSH→VPN 走 toggle_vpn 的原生确认；VPN→SSH
-        走 switch_mode_ssh 的确认+恢复）。VPN 激活时多一行「断开 VPN」。
-        单选行点当前模式 = 无操作（单选语义）。"""
+        """接入（互斥单选，B 类 ✓）：选择 SSH 或 VPN 连接方式。点未
+        选中项 = 发起该连接（SSH→VPN / VPN→SSH 走原生确认；空闲态
+        点击即直连——接入段就是连接的入口）。VPN 激活时多一行
+        「断开 VPN」。单选行点当前模式 = 无操作（单选语义）。"""
         st = self._get_state()
         a = self._app
         self.refs["mode_label"] = rumps.MenuItem(
@@ -555,8 +566,6 @@ class MenuBuilder:
             self._add_proxied_launches(None, a, rows)
 
         for item in rows:
-            if not item.title or item.title == i18n.t("menu.group.forward")                     or item.title == i18n.t("menu.group.mount"):
-                pass
             self._app.menu.add(item)
             if ssh_dim:
                 _set_enabled(item, False)

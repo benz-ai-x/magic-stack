@@ -34,7 +34,7 @@ from vpn.openvpn_client import VpnClient
 from shared.runtime_state import RuntimeProjection
 from shellui.log_window import LogBuffer, show_log_window
 from shellui.webview_window import show_config_window
-from shellui.menu_builder import MenuBuilder, MenuState, _status_color_for_connection
+from shellui.menu_builder import MenuBuilder, MenuState, _menubar_color
 from mpconf.config_state import ConfigStateStore
 from shared.stats import Stats
 from tunnel.connection_coordinator import ConnectionCoordinator
@@ -532,14 +532,17 @@ class MagicProxyApp(rumps.App):
         self._intents.vpn_connect(server)
 
     def switch_mode_ssh(self, _item):
-        """模式段：切回 SSH 隧道模式（菜单重设计 ②）。VPN 激活时原生
-        确认 → 断 VPN → 恢复 SSH 会话与挂载（显式切换 = 主动恢复；
-        被动断开仍不回切——ADR-011 语义不变）。已是 SSH 模式 = 无操作
-        （单选语义）。"""
+        """接入段「SSH 连接」：VPN 激活时原生确认 → 断 VPN → 恢复 SSH
+        会话与挂载（显式切换 = 主动恢复；被动断开仍不回切——ADR-011
+        语义不变）。SSH 已连接/连接中 = 无操作（单选语义）。SSH 空闲
+        （未连接且 VPN 未活跃）= 点击即连接——接入段就是连接入口。"""
         client = self._vpn_client
         vpn_active = client is not None and client.vpn.status in (
             "connecting", "connected", "reconnecting")
         if not vpn_active:
+            if self._conn.ssh.status in ("connected", "connecting"):
+                return
+            self._intents.reconnect_proxy_or_forward()
             return
         logger.info("mode switch to ssh: confirming")
         ok = rumps.alert(
@@ -583,12 +586,11 @@ class MagicProxyApp(rumps.App):
         if getattr(self, "_vpn_client", None) is not None:
             self._vpn_client.check()
 
-        # Set icon from pre-check status (matches original ordering)——
-        # 主图标永远反映代理会话（:8888 上游只依赖它）；转发会话的健康
-        # 在隧道子菜单逐条呈现
-        s = self._conn.ssh.status
+        # 主图标色（用户拍板语义）：灰=无连接 / 蓝=SSH / 绿=VPN / 黄=连接中
+        vpn_client = getattr(self, "_vpn_client", None)
+        vpn_st = vpn_client.vpn.status if vpn_client is not None else "idle"
         self._menu_builder.set_status_icon(
-            _status_color_for_connection(s, self._conn.paused))
+            _menubar_color(self._conn.ssh.status, self._conn.paused, vpn_st))
 
         key = self._menu_builder.struct_key()
         if key != self._menu_builder.last_struct_key:

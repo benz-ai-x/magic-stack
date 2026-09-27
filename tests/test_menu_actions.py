@@ -110,6 +110,38 @@ class TestConnectionActions(unittest.TestCase):
         a._sys_proxy.sync.assert_called_once()
         a._lifecycle.sync_sleep.assert_called_once()
 
+    def test_switch_mode_ssh_idle_click_connects(self):
+        """接入段语义（2026-09-27 纠偏）：空闲态点「SSH 连接」= 发起连接
+        ——接入段就是连接入口，不再无操作。"""
+        a = _make_app()
+        a._vpn_client = None
+        a._conn.ssh.status = "stopped"
+        with patch.object(app, "load_config", return_value=None):
+            a.switch_mode_ssh(None)
+        a._conn.restart.assert_called_once()
+
+    def test_switch_mode_ssh_noop_when_connected(self):
+        """单选语义：SSH 已连接时点「SSH 连接」无操作。"""
+        a = _make_app()
+        a._vpn_client = None
+        a._conn.ssh.status = "connected"
+        a.switch_mode_ssh(None)
+        a._conn.restart.assert_not_called()
+
+    def test_switch_mode_ssh_confirms_when_vpn_active(self):
+        """VPN 活跃时点「SSH 连接」：原生确认 → 断 VPN → 恢复 SSH 会话
+        与挂载（显式切换 = 主动恢复）。"""
+        a = _make_app()
+        a._vpn_client = MagicMock()
+        a._vpn_client.vpn.status = "connected"
+        a._intents = MagicMock()
+        with patch("rumps.alert", return_value=True):
+            a.switch_mode_ssh(None)
+        a._intents.vpn_disconnect.assert_called_once()
+        a._conn.start.assert_called_once()
+        a._conn.apply_autostarts.assert_called_once()
+        a._mounts.apply_autostarts.assert_called_once()
+
     def test_toggle_system_proxy_delegates(self):
         a = _make_app()
         a.toggle_system_proxy(None)

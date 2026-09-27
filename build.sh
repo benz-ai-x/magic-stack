@@ -126,6 +126,7 @@ python -m PyInstaller \
     --add-data "docs/examples/suanpan.example.yaml:." \
     --add-data "capture/ai_capture_addon.py:." \
     --add-data "assets/MenubarIcon.png:." \
+    --add-data "assets/MenubarIcon-green.png:." \
     --add-data "assets/MenubarIcon-gray.png:." \
     --add-data "assets/MenubarIcon-yellow.png:." \
     --add-data "util.py:." \
