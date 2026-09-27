@@ -174,7 +174,7 @@ class TestMultiActiveTunnels(unittest.TestCase):
     def test_proxy_submenu_structure(self):
         parent, subs = self._submenu("代 理")
         titles = self._titles
-        self.assertIn("暂停代理", titles)          # connected 语境
+        self.assertIn("停止代理", titles)          # connected 语境（原「暂停代理」，2026-09-27 用户裁决改停止语义）
         self.assertIn("重新连接", titles)
         self.assertIn("开启系统代理", titles)       # 动词式开关
         self.assertIn("代理服务器（本地代理的上游）", titles)

@@ -599,6 +599,16 @@ class MagicProxyApp(rumps.App):
     def cancel_connection(self, _):
         self._conn.cancel()
 
+    def stop_proxy_tunnel(self, _):
+        """停止代理（菜单，原「暂停代理」改造）：取消 SSH 隧道连接
+        （-D 会话 + 转发 + 本地代理运行时 + 重试调度）——停止即终止，
+        恢复走「重新连接」。后置同步面对齐 toggle_pause（系统代理收敛
+        与防睡眠状态重算）。"""
+        self._conn.cancel()
+        self._sys_proxy.sync()
+        self._lifecycle.sync_sleep(self._conn.ssh.status, self._conn.paused,
+                             self._config.get("prevent_sleep", False))
+
     def _reload_config_or_alert(self):
         """重读磁盘配置刷新内存副本（重连 / 单会话重建共用）。
 

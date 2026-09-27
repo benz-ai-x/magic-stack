@@ -99,6 +99,17 @@ class TestConnectionActions(unittest.TestCase):
         a._sys_proxy.sync.assert_called_once()
         a._lifecycle.sync_sleep.assert_called_once()
 
+    def test_stop_proxy_tunnel_cancels_and_syncs(self):
+        """菜单「停止代理」（原暂停改造）：取消隧道 + 后置同步面对齐
+        toggle_pause（系统代理收敛 / 防睡眠重算）。"""
+        a = _make_app()
+        a._conn.ssh.status = "connected"
+        a._conn.paused = False
+        a.stop_proxy_tunnel(None)
+        a._conn.cancel.assert_called_once()
+        a._sys_proxy.sync.assert_called_once()
+        a._lifecycle.sync_sleep.assert_called_once()
+
     def test_toggle_system_proxy_delegates(self):
         a = _make_app()
         a.toggle_system_proxy(None)

@@ -455,9 +455,11 @@ class MenuBuilder:
                 _apply_icon(item, "connect")
                 parent.add(item)
             elif s == "connected":
-                item = rumps.MenuItem(i18n.t("proxy.pause"),
-                                      callback=a.toggle_pause, key="p")
-                _apply_icon(item, "pause")
+                # 停止代理（原「暂停代理」）：取消 SSH 隧道连接——停止即
+                # 终止，恢复走「重新连接」（用户裁决，2026-09-27）
+                item = rumps.MenuItem(i18n.t("proxy.stop"),
+                                      callback=a.stop_proxy_tunnel, key="p")
+                _apply_icon(item, "cancel")
                 parent.add(item)
             item = rumps.MenuItem(
                 i18n.t("common.reconnect")
