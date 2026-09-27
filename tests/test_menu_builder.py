@@ -4,7 +4,8 @@ from unittest.mock import MagicMock
 
 import rumps
 
-from shellui.menu_builder import MenuBuilder, MenuState, _is_proxy_server
+from shellui.menu_builder import MenuBuilder, MenuState
+from shared.server_shape import is_proxy_server
 from tunnel.connection_coordinator import ForwardState
 from mount.coordinator import MountState
 
@@ -456,8 +457,8 @@ class TestIsProxyServer(unittest.TestCase):
     def test_id_truth_marks_server(self):
         cfg = {"proxy_server_id": "t-b",
                "servers": [{"id": "t-a"}, {"id": "t-b"}]}
-        self.assertFalse(_is_proxy_server(cfg, cfg["servers"][0]))
-        self.assertTrue(_is_proxy_server(cfg, cfg["servers"][1]))
+        self.assertFalse(is_proxy_server(cfg, cfg["servers"][0]))
+        self.assertTrue(is_proxy_server(cfg, cfg["servers"][1]))
 
     def test_dangling_id_marks_nothing(self):
         # 悬空 id 只可能出现在未经 merge 的手编配置里——merge 会把
@@ -465,17 +466,17 @@ class TestIsProxyServer(unittest.TestCase):
         # 此处钉住原始判定不猜归属（不静默回退标错行）。
         cfg = {"proxy_server_id": "gone",
                "servers": [{"id": "t-a"}, {"id": "t-b"}]}
-        self.assertFalse(_is_proxy_server(cfg, cfg["servers"][0]))
-        self.assertFalse(_is_proxy_server(cfg, cfg["servers"][1]))
+        self.assertFalse(is_proxy_server(cfg, cfg["servers"][0]))
+        self.assertFalse(is_proxy_server(cfg, cfg["servers"][1]))
 
     def test_absent_id_first_row_is_proxy(self):
         cfg = {"servers": [{"id": "t-a"}, {"id": "t-b"}]}
-        self.assertTrue(_is_proxy_server(cfg, cfg["servers"][0]))
+        self.assertTrue(is_proxy_server(cfg, cfg["servers"][0]))
 
     def test_malformed_config_is_safe(self):
-        self.assertFalse(_is_proxy_server(None, {"id": "t-a"}))
-        self.assertFalse(_is_proxy_server({}, {"id": "t-a"}))
-        self.assertFalse(_is_proxy_server({"servers": []}, {}))
+        self.assertFalse(is_proxy_server(None, {"id": "t-a"}))
+        self.assertFalse(is_proxy_server({}, {"id": "t-a"}))
+        self.assertFalse(is_proxy_server({"servers": []}, {}))
 
 
 class TestMountSubmenu(unittest.TestCase):

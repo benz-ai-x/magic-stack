@@ -13,7 +13,8 @@
 两个 fns 的分工：identity_fn 供 host-key 检查与凭据解析（原始隧道），
 spawn_fn 供 monitor.start（默认即 identity_fn；NFS 会话覆写为注入副本）。
 本类恒为纯 -L 形态（无 -D）；就绪探测口经 probe_port_fn 显式注入
-（推导助手 first_forward_port）——不留隐式默认，探测语义一处可寻。
+（推导助手 shared.server_shape.first_forward_port）——不留隐式默认，
+探测语义一处可寻。
 """
 
 import logging
@@ -23,24 +24,6 @@ from tunnel.retry_scheduler import RetryScheduler
 from tunnel.host_key_flow import HostKeyFlow
 
 logger = logging.getLogger("magic-proxy.ssh-session")
-
-
-def first_forward_port(tunnel):
-    """隧道第一条合法且启用 -L 的本地端口（就绪探测口推导的单一归宿）。
-
-    停用行（enabled=False）不进会话 -L 集合——探测口必须取实际会有的
-    端口，与 _forward_args 同口径。非法/缺字段行防御性跳过——prepare
-    校验与 merge 归一双保险下，正常流转的配置永不触达跳过分支。
-    """
-    forwards = (((tunnel or {}).get("services") or {})
-                .get("ssh") or {}).get("forwards") or []
-    for f in forwards:
-        if isinstance(f, dict) and f.get("enabled") is not False:
-            lp = f.get("local_port")
-            if isinstance(lp, int) and not isinstance(lp, bool) \
-                    and 1 <= lp <= 65535:
-                return lp
-    return None
 
 
 def check_and_recover(monitor, retry, host_key, probe_port):

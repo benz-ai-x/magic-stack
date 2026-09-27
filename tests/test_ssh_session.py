@@ -114,7 +114,7 @@ class TestProbePort(unittest.TestCase):
         self.assertEqual(s.probe_port, 13000)
 
     def test_first_forward_port_derivation_single_home(self):
-        from tunnel.ssh_session import first_forward_port
+        from shared.server_shape import first_forward_port
         self.assertEqual(first_forward_port(
             {"services": {"ssh": {"forwards": [
                 {"local_port": 9000, "remote_host": "h", "remote_port": 80},

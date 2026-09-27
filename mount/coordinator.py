@@ -15,7 +15,8 @@ autostarts，应用启动与配置保存后收敛）。desired 是运行时意�
 ——配置里的 auto_mount 才是持久意图。
 
 resolve_mount_dir（local_dir 默认 /Volumes/<name> 的单一归宿）经构造
-注入——mount 域不横向 import mpconf（装配层 app.py 负责接线）。
+注入；servers[] 形状访问器自 shared.server_shape 叶子层消费（不再手抄
+_nfs_of/_tunnels_by_id——mpconf 仍是同层禁区，形状知识的家在叶子层）。
 """
 import logging
 import threading
@@ -25,6 +26,7 @@ from typing import NamedTuple
 
 from mount import mount_control
 from mount.nfs_session import NfsSession
+from shared.server_shape import server_nfs, servers_by_id
 
 logger = logging.getLogger("magic-proxy.nfs-coordinator")
 
@@ -88,19 +90,11 @@ class MountCoordinator:
 
     # ── 配置投影 ─────────────────────────────────────────
 
-    @staticmethod
-    def _nfs_of(tunnel):
-        svc = ((tunnel or {}).get("services") or {})
-        nfs = svc.get("nfs")
-        return nfs if isinstance(nfs, dict) else {}
-
     def _tunnels_by_id(self):
-        cfg = self._get_config() or {}
-        return {t.get("id"): t for t in cfg.get("servers", [])
-                if isinstance(t, dict) and t.get("id")}
+        return servers_by_id(self._get_config())
 
     def _find_row(self, tunnel, name):
-        for row in self._nfs_of(tunnel).get("mounts") or []:
+        for row in server_nfs(tunnel).get("mounts") or []:
             if isinstance(row, dict) and row.get("name") == name:
                 return row
         return None
@@ -113,7 +107,7 @@ class MountCoordinator:
         with self._lock:
             result = []
             for tid, tunnel in self._tunnels_by_id().items():
-                nfs = self._nfs_of(tunnel)
+                nfs = server_nfs(tunnel)
                 if not (nfs.get("enabled") or nfs.get("mounts")):
                     continue
                 tname = tunnel.get("name") or (tunnel.get("ssh") or {}).get("host") or tid
@@ -146,7 +140,7 @@ class MountCoordinator:
         """按 auto_mount 收敛 desired（应用启动与配置保存后调用）。"""
         with self._lock:
             for tid, tunnel in self._tunnels_by_id().items():
-                nfs = self._nfs_of(tunnel)
+                nfs = server_nfs(tunnel)
                 if not nfs.get("enabled"):
                     continue
                 for row in nfs.get("mounts") or []:
@@ -209,7 +203,7 @@ class MountCoordinator:
         tids = {k[0] for k in self._desired} | set(self._sessions)
         for tid in sorted(tids):
             tunnel = tunnels.get(tid)
-            nfs = self._nfs_of(tunnel)
+            nfs = server_nfs(tunnel)
             session_wanted = (
                 tunnel is not None and bool(nfs.get("enabled"))
                 and any(k[0] == tid for k in self._desired))
@@ -277,7 +271,7 @@ class MountCoordinator:
         仍挂在 mount 表上——上个实例异常退出留下的 hard 挂载（断链路的
         死挂载会让 Finder 卡死）→ 卸载收敛。只碰本应用配置声明的目录。"""
         for tid, tunnel in tunnels.items():
-            for row in self._nfs_of(tunnel).get("mounts") or []:
+            for row in server_nfs(tunnel).get("mounts") or []:
                 if not isinstance(row, dict) or not row.get("name"):
                     continue
                 key = (tid, row["name"])
@@ -311,7 +305,7 @@ class MountCoordinator:
     def _ensure_session_locked(self, tunnel_id):
         tunnels = self._tunnels_by_id()
         tunnel = tunnels.get(tunnel_id)
-        nfs = self._nfs_of(tunnel)
+        nfs = server_nfs(tunnel)
         if tunnel is None or not nfs.get("enabled"):
             return
         session = self._sessions.get(tunnel_id)
@@ -362,7 +356,7 @@ class MountCoordinator:
 
     def _mount_job(self, tunnel_id, name, row):
         key = (tunnel_id, name)
-        nfs = self._nfs_of(self._tunnels_by_id().get(tunnel_id))
+        nfs = server_nfs(self._tunnels_by_id().get(tunnel_id))
         local_port = nfs.get("local_port")
         mount_dir = self._resolve_dir(row)
         error = ""

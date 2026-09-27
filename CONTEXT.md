@@ -24,7 +24,7 @@ macOS 全局代理设置（networksetup）。开启后系统内所有应用自�
 
 ### 服务器与服务（Server & Services）
 
-v0.13.0 配置模型（ADR-011）：`servers[]` 为中心的 **Server → Service → Instance** 三层——服务器（`ssh` 节持连接参数）承载 1:n 服务（`services.ssh` 隧道服务 / `services.nfs` 挂载服务 / `services.openvpn` VPN 服务），每服务承载 1:n 实例（转发行/挂载行）。设置窗「服务器」单视图（master-detail + 服务卡）是配置面；菜单保持功能分组（操作面）。服务卡「检测服务」经 `POST /api/server-check` 聚合探测（SERVICE_CARDS 注册表——新增服务类型 = 加一张卡）。代理角色 = `proxy_server_id` 单一真相。
+v0.13.0 配置模型（ADR-011）：`servers[]` 为中心的 **Server → Service → Instance** 三层——服务器（`ssh` 节持连接参数）承载 1:n 服务（`services.ssh` 隧道服务 / `services.nfs` 挂载服务 / `services.openvpn` VPN 服务），每服务承载 1:n 实例（转发行/挂载行）。设置窗「服务器」单视图（master-detail + 服务卡）是配置面；菜单保持功能分组（操作面）。服务卡「检测服务」经 `POST /api/server-check` 聚合探测（SERVICE_CARDS 注册表——新增服务类型 = 加一张卡）。代理角色 = `proxy_server_id` 单一真相。三层形状访问与 enabled 口径的单一归宿在 `shared/server_shape.py`（叶子层纯函数，全域同消费；代理角色悬空 id 两语义在此显式命名：`proxy_server` 回退版=merge 写侧同序、`is_proxy_server` 严格版=菜单读侧不猜归属）。
 
 ### 隧道（Tunnel）
 

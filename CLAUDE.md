@@ -59,6 +59,15 @@ util.py ── resource_path（frozen 平铺 / dev 按域包子目录查找）+ 
 
 shared/ ── 跨域叶子层（零域知识，被多域共用的原语；P1 迁入）
   netloc.py ── host:port 解析/格式化/loopback 校验唯一所有者
+  server_shape.py ── servers[] 形状与口径单一归宿（纯函数零 I/O，架构
+    评审 R6 C1 自 mpconf 下沉——同层域 tunnel/mount 够不着正主的病根）：
+    形状访问器（servers/server_by_id/servers_by_id/ssh_node/ssh_service/
+    server_forwards/server_nfs/nfs_node/server_openvpn/openvpn_node）+
+    代理角色悬空 id 两语义显式命名（proxy_server 回退版=写侧 merge 同序 /
+    is_proxy_server 严格版=菜单读侧不猜归属）+ enabled 口径
+    （enabled_forwards/first_forward_port——「不进 -L 集合/不占端口/会话
+    可存在性」三处注释互称『同口径』的知识上收）；mpconf 转发导出保持
+    既有 import 不破
   provider_auth.py ── 供应商认证纯逻辑 + PROVIDER_REGISTRY 注册表
     （ADR-010 端点矩阵：每厂商 anthropic/openai/responses 端点卡 +
     认证头 + 套餐变体 + 余额 API 卡带响应语法名——归一按卡路由）+
@@ -85,8 +94,8 @@ mpconf/ ── 配置栈
   config.py ── 配置 I/O + merge/migrate（schema v2 服务器中心：servers[]
     + ssh 节 + services.{ssh,nfs}，v1 tunnels[] 自动迁移保稳定 id——
     Keychain 槽位 tunnel:{id} 保值；proxy_server_id 单一真相取代
-    current_tunnel 双表示；servers 形状访问器单一归宿 servers/
-    server_by_id/proxy_server/server_forwards/server_nfs）+
+    current_tunnel 双表示；servers 形状访问器转发导出自 shared/
+    server_shape——单一归宿已下沉叶子层，既有 import 面不破）+
     decorate_runtime_state /api/state 运行态装饰单一归宿（只写
     RUNTIME_DECORATED_FIELDS 声明键，strip 名单同源派生）+
     forward_row(s)/toggle_forward_row 转发实例读写纯函数（翻转意图共用）

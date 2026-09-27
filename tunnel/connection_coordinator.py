@@ -35,26 +35,13 @@ from typing import NamedTuple
 from tunnel.proxy import ProxyRuntime, SSHMonitor
 from tunnel.retry_scheduler import RetryScheduler
 from tunnel.host_key_flow import HostKeyFlow
-from tunnel.ssh_session import SshSession, check_and_recover, \
-    first_forward_port
+from tunnel.ssh_session import SshSession, check_and_recover
+from shared.server_shape import (
+    enabled_forwards, first_forward_port, proxy_server, server_by_id,
+)
 from shared.stats import Stats
 
 logger = logging.getLogger("magic-proxy.connection")
-
-
-def has_enabled_forwards(server):
-    """该服务器是否有 ≥1 条启用中的转发实例（会话可存在性的单一口径）。
-
-    enabled=False 的行不进 -L 集合（_forward_args 同口径）——全部停用
-    的服务器等价于"无转发规则"：start 拒、check 收敛停、autostart 跳过。
-    """
-    forwards = ((server or {}).get("services") or {}).get("ssh", {}).get("forwards") or []
-    for f in forwards:
-        if isinstance(f, dict) and f.get("enabled") is not False:
-            return True
-    return False
-
-
 
 class ForwardState(NamedTuple):
     """一条转发会话的运行态快照（菜单/UI/配置服务共用投影）。
@@ -112,21 +99,10 @@ class ConnectionCoordinator:
 
     @property
     def current_server(self):
-        """代理服务器（v2 schema：proxy_server_id 唯一真相，首条回退）。
-
-        配置通常已经 merge_config 解析过；属性内保留回退序是为了对未经
-        merge 的裸配置（测试/手编）也给出稳定答案。
-        """
-        rows = [t for t in self._config.get("servers", [])
-                if isinstance(t, dict)]
-        if not rows:
-            return None
-        cid = self._config.get("proxy_server_id") or ""
-        if cid:
-            for t in rows:
-                if t.get("id") == cid:
-                    return t
-        return rows[0]
+        """代理服务器（v2 schema：proxy_server_id 唯一真相，首条回退）——
+        形状访问器单一归宿在 shared.server_shape（对未经 merge 的裸
+        配置也稳）。"""
+        return proxy_server(self._config)
 
     @property
     def socks5_port(self):
@@ -220,7 +196,7 @@ class ConnectionCoordinator:
             for tunnel_id in list(self._forward_sessions):
                 session = self._forward_sessions[tunnel_id]
                 tunnel = self._server_by_id(tunnel_id)
-                if tunnel is None or not has_enabled_forwards(tunnel):
+                if tunnel is None or not enabled_forwards(tunnel):
                     del self._forward_sessions[tunnel_id]
                     session.stop()
                     logger.info("转发会话收敛停止：%s（无隧道或无启用中的转发规则）",
@@ -231,10 +207,7 @@ class ConnectionCoordinator:
             self._lifecycle_lock.release()
 
     def _server_by_id(self, tunnel_id):
-        for t in self._config.get("servers", []):
-            if isinstance(t, dict) and t.get("id") == tunnel_id:
-                return t
-        return None
+        return server_by_id(self._config, tunnel_id)
 
     # ── 转发会话生命周期（多活） ─────────────────────────
 
@@ -247,7 +220,7 @@ class ConnectionCoordinator:
             tunnel = self._server_by_id(tunnel_id)
             if tunnel is None:
                 return False, "服务器不存在"
-            if not has_enabled_forwards(tunnel):
+            if not enabled_forwards(tunnel):
                 return False, "该服务器没有启用中的端口转发规则"
             if tunnel_id in self._forward_sessions:
                 session = self._forward_sessions[tunnel_id]
@@ -289,7 +262,7 @@ class ConnectionCoordinator:
             session.stop()
             reload_config_fn()
             tunnel = self._server_by_id(tunnel_id)
-            if tunnel is None or not has_enabled_forwards(tunnel):
+            if tunnel is None or not enabled_forwards(tunnel):
                 del self._forward_sessions[tunnel_id]
                 return True
             session.connect()
@@ -336,7 +309,7 @@ class ConnectionCoordinator:
                 continue
             tid = t.get("id")
             if tid and tid not in self._forward_sessions \
-                    and has_enabled_forwards(t):
+                    and enabled_forwards(t):
                 self.start_forward(tid)
 
     def handle_reconnect_trigger(self):

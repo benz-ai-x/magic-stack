@@ -12,7 +12,9 @@ import logging
 
 import rumps
 from capture import chromium_proxy
-from mpconf.config import proxy_server, server_forwards, servers
+from shared.server_shape import (
+    is_proxy_server, proxy_server, server_forwards, servers, ssh_node,
+)
 from shared import i18n
 from shared.i18n import DEFAULT_LANGUAGE
 from util import resource_path as _resource_path, truncate as _truncate
@@ -214,21 +216,6 @@ def _error_counts(st):
     mounts_bad = sum(1 for entry in (st.mount_states or ())
                      if entry.status == "error")
     return fw_bad, mounts_bad
-
-
-def _is_proxy_server(config, server) -> bool:
-    """代理角色判定（v2）：id 有效→命中；悬空/缺省→首条。与 merge 的
-    proxy_server 同一解析序——菜单只消费不重定义。
-
-    悬空 id（手编未 merge 的裸配置）不猜归属：merge 会在写侧重写为
-    有效值，菜单正常路径只见 merged 配置（TestIsProxyServer 钉住）。"""
-    if not isinstance(config, dict) or not isinstance(server, dict):
-        return False
-    rows = servers(config)
-    cid = config.get("proxy_server_id") or ""
-    if cid:
-        return server.get("id") == cid
-    return bool(rows) and server is rows[0]
 
 
 def _status_color(kind):
@@ -470,8 +457,8 @@ class MenuBuilder:
             sub = rumps.MenuItem(i18n.t("mode.servers"), callback=None)
             _apply_icon(sub, "tunnel_row")
             for t in rows_tunnels:
-                _ssh = t.get("ssh") or {}
-                marker = "✓ " if _is_proxy_server(st.config, t) else ""
+                _ssh = ssh_node(t)
+                marker = "✓ " if is_proxy_server(st.config, t) else ""
                 name = t.get("name") or                     f"{_ssh.get('user', '')}@{_ssh.get('host', '')}"
                 item = rumps.MenuItem(
                     f"{marker}{name}",

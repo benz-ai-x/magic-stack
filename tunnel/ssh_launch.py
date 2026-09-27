@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from tunnel import host_key
+from shared.server_shape import enabled_forwards, ssh_node
 
 # 探针的硬上限：ssh 自己的 ConnectTimeout 只管 TCP，这个管其余一切
 # （sshpass 提示等待、密钥交换卡住），HTTP 请求绝不无限挂起。
@@ -52,15 +53,6 @@ _FAILURE_PHRASES = (
 _HOST_KEY_CHANGED_PHRASE = _FAILURE_PHRASES[0][0]
 
 
-
-def _ssh(node: dict) -> dict:
-    """v2 服务器形状：连接参数在 ssh 节（merge 后全键在场）。"""
-    return node.get("ssh") or {}
-
-
-def _forwards(node: dict) -> list:
-    """v2 服务器形状：转发实例在 services.ssh.forwards。"""
-    return ((node.get("services") or {}).get("ssh") or {}).get("forwards") or []
 
 def describe_failure(stderr):
     """Map raw ssh stderr to a short Chinese phrase for the config UI."""
@@ -106,8 +98,8 @@ class SshCommand:
 
 
 def _destination(tunnel):
-    user = _ssh(tunnel).get("user", "")
-    host = _ssh(tunnel).get("host", "")
+    user = ssh_node(tunnel).get("user", "")
+    host = ssh_node(tunnel).get("host", "")
     return f"{user}@{host}" if user else host
 
 
@@ -128,7 +120,7 @@ def _with_auth(tunnel, ssh_args, password, extra_auth_args=()):
     NumberOfPasswordPrompts）。
     """
     destination = _destination(tunnel)
-    if _ssh(tunnel).get("auth_type") == "password":
+    if ssh_node(tunnel).get("auth_type") == "password":
         r_fd, w_fd = os.pipe()
         try:
             os.write(w_fd, (password + "\n").encode())
@@ -148,7 +140,7 @@ def _with_auth(tunnel, ssh_args, password, extra_auth_args=()):
         return SshCommand(cmd=cmd, display_cmd=display_cmd,
                           destination=destination, pass_fds=(r_fd,),
                           password_fd=r_fd)
-    key = str(_ssh(tunnel).get("ssh_key") or "")
+    key = str(ssh_node(tunnel).get("ssh_key") or "")
     cmd = ["ssh"] + list(extra_auth_args) + ["-i", key] + ssh_args
     return SshCommand(cmd=cmd, display_cmd=" ".join(cmd),
                       destination=destination)
@@ -168,9 +160,7 @@ def _forward_args(tunnel):
     正常流转的配置永不触达跳过分支。
     """
     args = []
-    for f in _forwards(tunnel):
-        if not isinstance(f, dict) or f.get("enabled") is False:
-            continue
+    for f in enabled_forwards(tunnel):
         lp, rp = f.get("local_port"), f.get("remote_port")
         if not _port_ok(lp) or not _port_ok(rp):
             continue
@@ -190,7 +180,7 @@ def build_tunnel_command(tunnel, socks5_port, password=""):
     其余隧道并行时必须是转发模式——两条 -D 同端口会因
     ExitOnForwardFailure 直接退出。
     """
-    port = str(_ssh(tunnel).get("port", 22))
+    port = str(ssh_node(tunnel).get("port", 22))
     dyn_args = [] if socks5_port is None else ["-D", str(socks5_port)]
     fw_args = _forward_args(tunnel) if socks5_port is None else []
     ssh_args = (
@@ -201,7 +191,7 @@ def build_tunnel_command(tunnel, socks5_port, password=""):
            # #87：跨国链路——更快判死（60s）、不标 DSCP（防中间设备针对性丢包）、
            # 建连自带 3 次重试（缓解瞬时 connect 超时）
            "-o", "IPQoS=none", "-o", "ConnectionAttempts=3"])
-    if _ssh(tunnel).get("compression", True):
+    if ssh_node(tunnel).get("compression", True):
         ssh_args.append("-C")
     ssh_args.extend(["-p", port, _destination(tunnel)])
     return _with_auth(tunnel, ssh_args, password)
@@ -217,10 +207,10 @@ def probe(tunnel, password=""):
 
     返回 {"ok": True} 或 {"ok": False, "error": "<中文短语>"}——绝不抛异常。
     """
-    port = str(_ssh(tunnel).get("port", 22))
+    port = str(ssh_node(tunnel).get("port", 22))
     ssh_args = (["-o", "ConnectTimeout=5"] + _host_key_args()
                 + ["-p", port, _destination(tunnel), "true"])
-    if _ssh(tunnel).get("auth_type") == "password":
+    if ssh_node(tunnel).get("auth_type") == "password":
         extra = ("-o", "NumberOfPasswordPrompts=1")
     else:
         extra = ("-o", "BatchMode=yes")
@@ -266,10 +256,10 @@ def probe_forward(tunnel, remote_host, remote_port, password=""):
         return {"ok": False, "error": "远程端口无效（须 1..65535）"}
     if any(c.isspace() for c in rh) or ":" in rh:
         return {"ok": False, "error": "远程地址无效（暂不支持 IPv6）"}
-    port = str(_ssh(tunnel).get("port", 22))
+    port = str(ssh_node(tunnel).get("port", 22))
     ssh_args = (["-o", "ConnectTimeout=5"] + _host_key_args()
                 + ["-p", port, "-W", f"{rh}:{rp}", _destination(tunnel)])
-    if _ssh(tunnel).get("auth_type") == "password":
+    if ssh_node(tunnel).get("auth_type") == "password":
         extra = ("-o", "NumberOfPasswordPrompts=1")
     else:
         extra = ("-o", "BatchMode=yes")
@@ -318,10 +308,10 @@ def run_remote(tunnel, command, password="", sudo_password="",
     {"ok": False, "error": "<中文短语>", "stdout": str, "stderr": str}
     ——绝不抛异常。
     """
-    port = str(_ssh(tunnel).get("port", 22))
+    port = str(ssh_node(tunnel).get("port", 22))
     ssh_args = (["-o", "ConnectTimeout=10"] + _host_key_args()
                 + ["-p", port, _destination(tunnel), command])
-    if _ssh(tunnel).get("auth_type") == "password":
+    if ssh_node(tunnel).get("auth_type") == "password":
         extra = ("-o", "NumberOfPasswordPrompts=1")
     else:
         extra = ("-o", "BatchMode=yes")

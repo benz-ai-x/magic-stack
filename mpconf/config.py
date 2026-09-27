@@ -22,6 +22,10 @@ from shared import netloc
 from shared.defaults import DEFAULT_CAPTURE_DIR, DEFAULT_CAPTURE_PORT
 from shared.identity import IdentityMigrationError, stable_id
 from shared.config_store import DEFAULT_PATHS, atomic_write, get_path
+from shared.server_shape import (  # 转发导出：形状访问器单一归宿
+    proxy_server, proxy_server_id, server_by_id, server_forwards,
+    server_nfs, server_openvpn, servers,
+)
 
 logger = logging.getLogger("magic-proxy.config")
 
@@ -175,57 +179,9 @@ def normalize_openvpn(openvpn) -> dict:
     }
 
 
-# ── servers 形状访问器（路径知识单一归宿）──────────────────────
-
-
-def servers(cfg) -> list:
-    """配置里的服务器列表（形状安全：非列表→[]）。"""
-    rows = (cfg or {}).get("servers")
-    return rows if isinstance(rows, list) else []
-
-
-def server_by_id(cfg, sid) -> dict | None:
-    """稳定 id → 服务器（None = 不存在）。"""
-    for s in servers(cfg):
-        if isinstance(s, dict) and s.get("id") == sid:
-            return s
-    return None
-
-
-def proxy_server_id(cfg) -> str:
-    """当前代理服务器的稳定 id（''=未配置）。"""
-    sid = (cfg or {}).get("proxy_server_id")
-    return sid if isinstance(sid, str) else ""
-
-
-def proxy_server(cfg) -> dict | None:
-    """代理角色服务器：id 有效→id 对应服务器→首条（与 merge 同一解析序，
-    单一归宿——消费方不再各写一份判定）。"""
-    rows = servers(cfg)
-    sid = proxy_server_id(cfg)
-    if sid:
-        for s in rows:
-            if isinstance(s, dict) and s.get("id") == sid:
-                return s
-    return rows[0] if rows else None
-
-
-def server_forwards(server) -> list:
-    """服务器的 SSH 隧道服务转发实例（merge 后形状恒定，免防御链）。"""
-    svc = (server or {}).get("services") or {}
-    return ((svc.get("ssh") or {}).get("forwards")) or []
-
-
-def server_nfs(server) -> dict:
-    """服务器的 NFS 服务节点（merge 后形状恒定）。"""
-    svc = (server or {}).get("services") or {}
-    return (svc.get("nfs") or {})
-
-
-def server_openvpn(server) -> dict:
-    """服务器的 OpenVPN 服务节点（merge 后形状恒定）。"""
-    svc = (server or {}).get("services") or {}
-    return (svc.get("openvpn") or {})
+# ── servers 形状访问器：单一归宿已下沉 shared/server_shape ──────
+# （叶子层纯函数；tunnel/mount 同层够不着 mpconf 的病根——13 个手抄
+# 解析点与 #115 事故的教训。此处转发导出，既有 import 不破。）
 
 
 def assign_stable_ids(server_rows) -> int:

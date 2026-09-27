@@ -7,8 +7,12 @@ prepare 钉死，本模块的存在让新域校验与该域的归一/解析知�
 
 与运行时共用的规则单一归宿：挂载点默认目录解析在
 mpconf.config.resolve_mount_dir（校验与运行时同一语义，不复制规则）。
+servers[] 形状访问器（含服务节点 None 语义）自 shared.server_shape 消费。
 """
 from shared.defaults import PORT_MAX as _PORT_MAX
+from shared.server_shape import (
+    nfs_node, openvpn_node, servers as _servers, ssh_service,
+)
 
 _MP_PORTS = ("socks5_port", "http_listen_port", "capture_port", "config_port")
 _RETENTION_MAX = 3650        # 十年封顶：再大属单位填错
@@ -32,20 +36,6 @@ def numeric_errors(mp) -> list:
 
 
 
-def _ssh_svc(server) -> dict:
-    """v2 形状：SSH 隧道服务节点（services.ssh；非 dict 形状安全返回 {}）。"""
-    svc = server.get("services") if isinstance(server.get("services"), dict) else {}
-    ssh = svc.get("ssh")
-    return ssh if isinstance(ssh, dict) else {}
-
-
-def _nfs_svc(server):
-    """v2 形状：NFS 服务节点（services.nfs；非 dict 返回 None 保持
-    「未配置不校验」语义）。"""
-    svc = server.get("services") if isinstance(server.get("services"), dict) else {}
-    nfs = svc.get("nfs")
-    return nfs if isinstance(nfs, dict) else None
-
 def server_rows_errors(mp) -> list:
     """逐服务器行校验：SSH 隧道服务的转发实例 + NFS 服务的挂载实例。
 
@@ -55,30 +45,30 @@ def server_rows_errors(mp) -> list:
     对必须在落盘前拦下。
     """
     errors = []
-    for _ti, _t in enumerate(mp.get("servers") or []):
+    for _ti, _t in enumerate(_servers(mp)):
         if not isinstance(_t, dict):
             continue
         _tname = _t.get("name") or f"#{_ti}"
         _ssh = _t.get("ssh")
         if _ssh is not None and not isinstance(_ssh, dict):
             errors.append(f"服务器 {_tname} 的 ssh 必须是对象")
-        _forwards = _ssh_svc(_t).get("forwards")
+        _forwards = ssh_service(_t).get("forwards")
         if _forwards is None:
             pass
         elif not isinstance(_forwards, list):
             errors.append(f"服务器 {_tname} 的 forwards 必须是列表")
         else:
             errors += _forward_rows(_tname, _forwards)
-        _nfs = _nfs_svc(_t)
+        _nfs = nfs_node(_t)
         if _nfs is not None:
             errors += _nfs_errors(_tname, _nfs)
-        _vpn = _vpn_svc(_t)
+        _vpn = openvpn_node(_t)
         if _vpn is not None:
             errors += _vpn_errors(_tname, _vpn)
     return errors
 
 
-def _vpn_svc(server):
+def openvpn_node(server):
     """v2 形状：OpenVPN 服务节点（services.openvpn；非 dict 返回 None）。"""
     svc = server.get("services") if isinstance(server.get("services"), dict) else {}
     vpn = svc.get("openvpn")
@@ -188,12 +178,12 @@ def port_conflict_errors(mp, sp) -> list:
             _v = mp.get(_f)
             if isinstance(_v, int) and not isinstance(_v, bool):
                 port_refs.append((_f, _v))
-        for _ti, _t in enumerate(mp.get("servers") or []):
+        for _ti, _t in enumerate(_servers(mp)):
             if not isinstance(_t, dict):
                 continue
             _tname = _t.get("name") or f"#{_ti}"
             _fw_seen = set()
-            for _f in _ssh_svc(_t).get("forwards") or []:
+            for _f in ssh_service(_t).get("forwards") or []:
                 if not isinstance(_f, dict):
                     continue
                 _lp = _f.get("local_port")
@@ -212,7 +202,7 @@ def port_conflict_errors(mp, sp) -> list:
                     _fw_seen.add(_lp)
                     port_refs.append(
                         (f"服务器 {_tname} 端口转发本地端口", _lp))
-            _nfs = _nfs_svc(_t)
+            _nfs = nfs_node(_t)
             if isinstance(_nfs, dict) and (
                     _nfs.get("enabled") is True or _nfs.get("mounts")):
                 _np = _nfs.get("local_port")
@@ -243,11 +233,11 @@ def mount_dir_conflict_errors(mp) -> list:
     from mpconf.config import resolve_mount_dir as _resolve_dir
     errors = []
     _dirs_seen = {}
-    for _ti, _t in enumerate(mp.get("servers") or []):
+    for _ti, _t in enumerate(_servers(mp)):
         if not isinstance(_t, dict):
             continue
         _tname = _t.get("name") or f"#{_ti}"
-        _nfs = _nfs_svc(_t)
+        _nfs = nfs_node(_t)
         _nfs_mounts = (_nfs.get("mounts")
                        if isinstance(_nfs, dict) else None) or []
         for _m in _nfs_mounts:

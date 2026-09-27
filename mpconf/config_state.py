@@ -14,6 +14,7 @@ from typing import NamedTuple
 import yaml
 
 from shared.provider_auth import restore_masked_key
+from shared.server_shape import servers as _servers, ssh_node as _ssh_node
 
 logger = logging.getLogger("magic-proxy.config_state")
 
@@ -143,7 +144,7 @@ class ConfigStateStore:
             # （merge 逐行归一保位不丢行，下标对齐安全）
             _pre_passwords = [
                 (t.pop("password", None) if isinstance(t, dict) else None)
-                for t in (mp_c.get("servers") or [])]
+                for t in _servers(mp_c)]
             mp_c = merge_config(mp_c)
         if sp_c is not None:
             if sp_c.get("_load_error"):
@@ -166,17 +167,17 @@ class ConfigStateStore:
                 old_tok = old_mp.get(_lt_field)
                 if old_tok:
                     mp_c[_lt_field] = old_tok
-            new_ids = {t.get("id") for t in mp_c.get("servers") or []
+            new_ids = {t.get("id") for t in _servers(mp_c)
                        if isinstance(t, dict)}
-            for t in old_mp.get("servers") or []:
+            for t in _servers(old_mp):
                 if isinstance(t, dict) and t.get("id") and t["id"] not in new_ids:
                     kc_dels.append(("all", t))
-            for i, t in enumerate(mp_c.get("servers") or []):
+            for i, t in enumerate(_servers(mp_c)):
                 for deco in READONLY_DECORATED_FIELDS:
                     t.pop(deco, None)
                 pw = (_pre_passwords[i]
                       if i < len(_pre_passwords) else None)
-                _ssh = t.get("ssh") if isinstance(t.get("ssh"), dict) else {}
+                _ssh = _ssh_node(t)
                 _auth = _ssh.get("auth_type")
                 if pw:
                     kc_sets.append((dict(t), pw))
