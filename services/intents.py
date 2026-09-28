@@ -56,8 +56,8 @@ class UserIntents:
         self._alert = alert
         self._hold_copy_latch = hold_copy_latch
         self._get_agent_instructions = get_agent_instructions
-        # VPN（M2 接线）：连接核心归 app（VpnClient 持有者 + 互斥屏障），
-        # intents 只独占线程纪律与 dirty——同 capture_ctrl 模式
+        # VPN（R7-C1 起）：连接核心归 vpn/coordinator（序列/互斥/错误
+        # 表单一归宿），intents 只独占线程纪律与 dirty——同 capture_ctrl 模式
         self._vpn_connect_impl = vpn_connect
         self._vpn_disconnect_impl = vpn_disconnect
 

@@ -657,8 +657,9 @@ class MenuBuilder:
             if not isinstance(t, dict):
                 continue
             tid = t.get("id") or f"#{i}"
+            _sn = ssh_node(t)
             name = t.get("name") or \
-                f"{(t.get('ssh') or {}).get('user', '')}@{(t.get('ssh') or {}).get('host', '')}"
+                f"{_sn.get('user', '')}@{_sn.get('host', '')}"
             row = self.refs.get(("fw_tunnel", tid))
             if row is not None:
                 status = fw_running.get(tid)
@@ -805,8 +806,9 @@ class MenuBuilder:
         s = st.ssh_status
         tunnel = st.current_server
         tunnel_name = tunnel.get("name") if tunnel else None
+        _sn = ssh_node(tunnel) if tunnel else {}
         tunnel_name = tunnel_name or (
-            f"{(tunnel.get('ssh') or {}).get('user', '')}@{(tunnel.get('ssh') or {}).get('host', '')}" if tunnel else i18n.t("status.name.unconfigured"))
+            f"{_sn.get('user', '')}@{_sn.get('host', '')}" if tunnel else i18n.t("status.name.unconfigured"))
 
         # 接入行（行即开关定稿）：标题 = 对象（方式 + 服务器），圆点 =
         # 状态（蓝=SSH 已连 / 绿=VPN 已连 / 黄=进行中 / 红=异常 / 无点=

@@ -30,7 +30,7 @@ from mpconf.config import (  # noqa: F401 — DEFAULT_CONFIG 是模块导出符�
 from mount.coordinator import MountCoordinator
 from vpn.coordinator import MenuVpn, VpnCoordinator
 from shared.runtime_state import RuntimeProjection
-from shared.server_shape import server_nfs, ssh_node
+from shared.server_shape import server_by_id, server_nfs, ssh_node
 from shellui.log_window import LogBuffer, show_log_window
 from shellui.webview_window import show_config_window
 from shellui.menu_builder import MenuBuilder, MenuState, _menubar_color
@@ -668,8 +668,7 @@ class MagicProxyApp(rumps.App):
     def make_switch_server(self, sid):
         """切换代理服务器（v2：proxy_server_id 单一真相）。"""
         def switch(_):
-            target = next((t for t in self._config.get("servers", [])
-                           if isinstance(t, dict) and t.get("id") == sid), None)
+            target = server_by_id(self._config, sid)
             if target is None:
                 return
             if target is self._conn.current_server \
@@ -715,9 +714,8 @@ class MagicProxyApp(rumps.App):
     def make_open_mount_dir(self, tunnel_id, name):
         """菜单「打开挂载目录」：Finder 中打开（不存在则先建目录）。"""
         def act(_):
-            for t in self._config.get("servers", []):
-                if not (isinstance(t, dict) and t.get("id") == tunnel_id):
-                    continue
+            t = server_by_id(self._config, tunnel_id)
+            if t is not None:
                 for row in (server_nfs(t).get("mounts") or []):
                     if isinstance(row, dict) and row.get("name") == name:
                         d = resolve_mount_dir(row)

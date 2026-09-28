@@ -287,7 +287,12 @@ class VpnClient(SubprocessMonitor):
     def _quit_reap(self, proc):
         """quit 路径的后台收尾：等进程退出 + 收养兜底（daemon 线程，
         进程退出时被杀亦无碍——SIGTERM 已发出，残留由下次启动的
-        清场收养兜底）。"""
+        清场收养兜底）。
+
+        收养身份守卫（R8-F8）：干净退出（exit 0）= mgmt SIGTERM 已让
+        root openvpn 自跑 down 脚本退出，无需收养——跳过即消灭「quit
+        期与新 VpnClient 抢同端口、SIGTERM 误发进新实例管理口」的窗口；
+        仅被 kill 的非干净退出才兜底收养。"""
         try:
             proc.wait(timeout=8.0)
         except subprocess.TimeoutExpired:
@@ -295,6 +300,8 @@ class VpnClient(SubprocessMonitor):
                 proc.kill()
             except OSError:
                 pass
+        if proc.returncode == 0:
+            return
         if self._mgmt_password:
             try:
                 adopt_stale_openvpn(self._mgmt_password, self._mgmt_port)

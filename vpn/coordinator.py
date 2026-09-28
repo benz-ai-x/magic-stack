@@ -191,17 +191,13 @@ class VpnCoordinator:
         c = self._client
         return c is not None and is_active_status(c.vpn.status)
 
-    def is_in_flight(self) -> bool:
-        """显示面进行中（黄点档，含 exiting 不含 connected）。"""
-        c = self._client
-        return c is not None and is_in_flight_status(c.vpn.status)
-
     def status(self) -> str:
         c = self._client
         return c.vpn.status if c is not None else "idle"
 
-    def snapshot(self):
-        """RuntimeProjection.vpn 的单一来源（无客户端 → None）。"""
+    def _snapshot(self):
+        """RuntimeProjection.vpn 的快照半边（外部读侧唯一面是
+        projection()——R8 复检将零外部消费的 snapshot 收私有）。"""
         c = self._client
         return c.snapshot() if c is not None else None
 
@@ -210,7 +206,7 @@ class VpnCoordinator:
         （active/in_flight——JS 侧状态集字面量随之消灭）+ error_key
         （已解析 i18n 键，JS tt() 取词——error_kind 英文 token 不再
         裸进 UI）。装饰链 wholesale 透传（mp["vpn_state"] = proj.vpn）。"""
-        snap = self.snapshot()
+        snap = self._snapshot()
         if not snap:
             return None
         kind = snap.get("error_kind") or ""

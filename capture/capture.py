@@ -52,8 +52,8 @@ class CaptureMonitor(SubprocessMonitor):
         try:
             resolved_capture_dir = prepare_capture_dir(capture_dir or DEFAULT_CAPTURE_DIR)
         except OSError as exc:
-            self._status = "error"
-            self._error_msg = str(exc)
+            self.set_status(self._STATUS_ERROR)
+            self.set_error(str(exc))
             return False
         try:
             cleanup_expired_captures(resolved_capture_dir, retention_days)

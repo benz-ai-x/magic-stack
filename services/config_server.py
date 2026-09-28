@@ -27,7 +27,7 @@ from capture import capture_store
 from mpconf.config import (load_config, merge_config, decorate_runtime_state,
                            server_by_id,
 )
-from shared.server_shape import ssh_node, with_service_patch
+from shared.server_shape import servers, ssh_node, with_service_patch
 from vpn import profile as vpn_profile
 from vpn import profile_store as vpn_profile_store
 from services.balance_usage import fetch_balance
@@ -118,7 +118,7 @@ def _read_mp():
         return {"_load_error": "Magic Proxy 配置装载失败，已阻止保存以防覆盖"}
     if not cfg:
         return {}
-    for t in cfg.get("servers", []):
+    for t in servers(cfg):
         # has_password 属 READONLY_DECORATED_FIELDS（prepare 剥除侧单点声明）
         _ssh = ssh_node(t)
         t["has_password"] = bool(
@@ -688,7 +688,9 @@ class _Handler(BaseHTTPRequestHandler):
                     if isinstance(s, dict) and s.get("id") == sid else s
                     for s in c.get("servers") or []]
                 return c
-            persisted = ConfigStateStore().update_mp(_mark)
+            # SaveResult 是 NamedTuple——json 序列化成数组恒真值
+            # （R8 复检：响应字段此前两态破裂，测试在失败路径也通过）
+            persisted = ConfigStateStore().update_mp(_mark).ok
         except Exception:
             logger.exception("vpn profile_set persist failed")
         self._json(200, {
@@ -779,7 +781,7 @@ class _Handler(BaseHTTPRequestHandler):
         if isinstance(idx, bool) or not isinstance(idx, int):
             return None, "无效的服务器索引"
         cfg = _read_mp()
-        rows = cfg.get("servers", []) if isinstance(cfg, dict) else []
+        rows = servers(cfg)
         if not rows:
             return None, "尚未配置服务器"
         if not 0 <= idx < len(rows):

@@ -38,7 +38,7 @@ from tunnel.host_key_flow import HostKeyFlow
 from tunnel.ssh_session import SshSession, check_and_recover
 from shared.server_shape import (
     enabled_forwards, first_forward_port, proxy_server, server_by_id,
-    ssh_service,
+    servers, ssh_service,
 )
 from shared.stats import Stats
 
@@ -305,7 +305,7 @@ class ConnectionCoordinator:
     def apply_autostarts(self):
         """按 services.ssh.autostart 收敛补启（app 启动与配置重载后调用）。
         ADR-011 修订：代理服务器不再跳过——它的转发与 -D 接入各自独立。"""
-        for t in self._config.get("servers", []):
+        for t in servers(self._config):
             if not (isinstance(t, dict) and ssh_service(t).get("autostart")):
                 continue
             tid = t.get("id")
