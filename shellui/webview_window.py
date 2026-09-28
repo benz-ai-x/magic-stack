@@ -90,10 +90,11 @@ class _ConfigWindowDelegate(NSObject):
         if not self._core.dirty:
             return True
         alert = NSAlert.alloc().init()
-        alert.setMessageText_("有未保存的更改")
-        alert.setInformativeText_("关闭窗口将丢失未保存的更改，确定要关闭吗？")
-        alert.addButtonWithTitle_("放弃更改并关闭")
-        alert.addButtonWithTitle_("取消")
+        from shared import i18n
+        alert.setMessageText_(i18n.t("window.dirty.title"))
+        alert.setInformativeText_(i18n.t("window.dirty.body"))
+        alert.addButtonWithTitle_(i18n.t("window.dirty.discard"))
+        alert.addButtonWithTitle_(i18n.t("window.dirty.cancel"))
         alert.setAlertStyle_(1)  # NSWarningAlertStyle
         return alert.runModal() == NSAlertFirstButtonReturn
 
@@ -163,7 +164,7 @@ class _ConfigWindowDelegate(NSObject):
 
 
 
-def show_config_window(url, title="Magic Stack 设置", on_action=None,
+def show_config_window(url, title=None, on_action=None,
                        auth_headers=None, on_close=None):
     """Open (or focus) the config webview window.
 
@@ -179,6 +180,9 @@ def show_config_window(url, title="Magic Stack 设置", on_action=None,
     （ADR-009——app 侧据此释放配置服务持有者）。既有窗口可见时本函数
     早退聚焦，不重复挂回调。
     """
+    from shared import i18n
+    if title is None:
+        title = i18n.t("window.settings.title")
     global _config_window, _webview, _window_delegate
 
     if _config_window and _config_window.isVisible():

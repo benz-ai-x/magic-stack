@@ -58,8 +58,6 @@ _HAN_WHITELIST = {
     "mpconf/config.py": "M4：错误/提示文案",
     "mpconf/config_state.py": "M4：事务错误文案",
     "mpconf/validate.py": "M3：校验错误行",
-    "shellui/log_window.py": "M4：日志窗标题",
-    "shellui/webview_window.py": "M4：设置窗标题/脚本",
     "capture/ca_trust.py": "M4：CA 信任引导窗",
     "capture/capture_controller.py": "M4：抓包 hint 文案",
     "capture/capture_store.py": "M4：抓包目录提示",

@@ -149,7 +149,8 @@ class LogWindow(NSObject):
              | NSWindowStyleMaskResizable),
             2, False,
         )
-        win.setTitle_("Magic Stack — 实时日志")
+        from shared import i18n
+        win.setTitle_(i18n.t("window.log.title"))
         win.setReleasedWhenClosed_(False)
         win.setDelegate_(self)
         self._window = win

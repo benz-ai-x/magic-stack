@@ -699,5 +699,11 @@
   "access.vpn.connected": "VPN · {ip}",
   "access.vpn.connecting": "VPN · 连接中",
   "access.vpn.reconnecting": "VPN · 重连中",
-  "access.vpn.error": "VPN · 异常"
+  "access.vpn.error": "VPN · 异常",
+  "window.dirty.title": "有未保存的更改",
+  "window.dirty.body": "关闭窗口将丢失未保存的更改，确定要关闭吗？",
+  "window.dirty.discard": "放弃更改并关闭",
+  "window.dirty.cancel": "取消",
+  "window.settings.title": "Magic Stack 设置",
+  "window.log.title": "Magic Stack — 实时日志"
 }

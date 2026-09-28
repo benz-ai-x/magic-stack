@@ -699,5 +699,11 @@
   "access.vpn.connected": "VPN · {ip}",
   "access.vpn.connecting": "VPN · connecting",
   "access.vpn.reconnecting": "VPN · reconnecting",
-  "access.vpn.error": "VPN · error"
+  "access.vpn.error": "VPN · error",
+  "window.dirty.title": "Unsaved changes",
+  "window.dirty.body": "Closing the window will discard unsaved changes. Close anyway?",
+  "window.dirty.discard": "Discard and Close",
+  "window.dirty.cancel": "Cancel",
+  "window.settings.title": "Magic Stack Settings",
+  "window.log.title": "Magic Stack — Live Logs"
 }
