@@ -58,41 +58,54 @@ if __name__ == "__main__":
 class TestBuildScriptCoverage(unittest.TestCase):
     """build.sh 的 --add-data 必须覆盖 manifest（单一真源驱动构建）。"""
 
-    def test_build_script_covers_manifest(self):
-        from tools.resource_manifest import RESOURCE_MANIFEST, RUNTIME_MODULES
+    def test_build_script_consumes_manifest_generator(self):
+        """R9-C2：build.sh 的 --add-data 自 manifest 单源生成（原 60 行
+        手抄镜像 + substring 兜底退役）——镜像变消费。"""
         build = (ROOT / "build.sh").read_text()
-        missing = []
-        for src, _ in RESOURCE_MANIFEST + [(m, ".") for m in RUNTIME_MODULES]:
-            if src == "app.py":
-                continue  # app.py 是 PyInstaller 入口参数，不走 add-data
-            if f'--add-data "{src}:."' not in build:
-                missing.append(src)
-        self.assertEqual(missing, [],
-                         f"build.sh 未按 manifest 打包: {missing}")
+        self.assertIn(
+            "$(python tools/resource_manifest.py --pyinstaller-args)",
+            build, "build.sh 必须经 manifest 生成 add-data（不再手抄）")
 
     def test_runtime_modules_exist(self):
         from tools.resource_manifest import RUNTIME_MODULES
         missing = [m for m in RUNTIME_MODULES if not (ROOT / m).is_file()]
         self.assertEqual(missing, [])
 
+    def test_runtime_modules_cover_product_packages(self):
+        """R9-C2 补全的回归钉：belt-and-suspenders 清单须覆盖全部产品
+        域模块（此前 vpn/mount/server_shape 等靠 PyInstaller 追踪兜底、
+        清单空转无人知）。"""
+        from tools.resource_manifest import RUNTIME_MODULES, RESOURCE_MANIFEST
+        import os
+        covered = set(RUNTIME_MODULES)
+        covered |= {src for src, _ in RESOURCE_MANIFEST}
+        missing = []
+        for pkg in ("shared", "mpconf", "tunnel", "mount", "vpn", "shellui",
+                    "capture", "sysctl", "services"):
+            for f in sorted(os.listdir(ROOT / pkg)):
+                if not f.endswith(".py") or f == "__init__.py":
+                    continue
+                rel = f"{pkg}/{f}"
+                if rel not in covered:
+                    missing.append(rel)
+        self.assertEqual(
+            missing, [],
+            f"RUNTIME_MODULES 漏收（新模块须同步 manifest——belt 空转"
+            f"即静默）: {missing}")
+
 
 class TestBuildScriptReverseCoverage(unittest.TestCase):
     """#49：守卫双向——build.sh 多打的 --add-data 也必须在 manifest
     （或显式白名单）。ssh_launch 曾漂移出 RUNTIME_MODULES 无人报警。"""
 
-    def test_every_add_data_covered_by_manifest_or_allowlist(self):
+    def test_no_handwritten_add_data_beyond_allowlist(self):
+        """R9-C2：生成化后 build.sh 只许三处 add-data——build_time/
+        manifest 生成调用/dist-mitmdump。手抄回归即红。"""
         import re
-        from tools.resource_manifest import RESOURCE_MANIFEST, RUNTIME_MODULES
         build = (ROOT / "build.sh").read_text()
-        # 白名单：非资源、非 import 模块的构建自身产物
-        allowlist = {"build_time.txt", "dist-mitmdump/mitmdump"}
-        covered = {src for src, _ in RESOURCE_MANIFEST}
-        covered |= {m for m in RUNTIME_MODULES if m != "app.py"}
-        covered |= allowlist
-        stray = [m.group(1).rsplit(":", 1)[0] for m in
-                 re.finditer(r'--add-data "([^"]+)"', build)]
-        uncovered = sorted({s for s in stray if s not in covered})
+        literals = re.findall(r'--add-data "([^"]+)"', build)
         self.assertEqual(
-            uncovered, [],
-            f"build.sh 打包了 manifest 未收录的文件（真源漂移）: {uncovered}")
+            sorted(literals),
+            ["build_time.txt:.", "dist-mitmdump/mitmdump:mitmdump"],
+            f"build.sh 出现手抄 --add-data（须进 manifest）: {literals}")
 

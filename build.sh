@@ -26,18 +26,10 @@ fi
 # untouched), and an addon captured the decrypted plaintext body. Full
 # evidence: progress/backend-dev.md (Task 1 + Task 5 entries).
 #
-# NOTE (verify-before-assert finding, Task 1): mitmproxy 12.x requires
-# Python >=3.12, NOT >=3.10 as ADR-001's Global Constraints / version table
-# currently state (confirmed against live PyPI metadata: mitmproxy 11.1.0+
-# and all 12.x releases declare Requires-Python >=3.12; only 11.0.2
-# supports 3.10). Also: CVE-2025-23217 (the ADR's stated reason to avoid
-# 11.x) is a GitHub Security Advisory confirmed mitmweb-only ("The
-# mitmproxy and mitmdump tools are unaffected") -- irrelevant to this
-# project, which only ships mitmdump. This build step therefore targets
-# Python 3.12, pending tech-lead's ADR-001/ADR-000 revision (Task 5 Step 3,
-# explicitly out of scope for this script -- see progress/backend-dev.md).
-# This does NOT change the main app build below, which still targets the
-# existing >=3.9 floor.
+# NOTE: mitmproxy 12.x requires Python >=3.12, and CVE-2025-23217 is
+# mitmweb-only（只发 mitmdump 不受影响）——两点均已收录进 ADR-001
+# （已修订，见 docs/adr/001-mitm-packet-capture.md；R9-C2 删除本处
+# 指向「ADR 待修订」的过期快照注释）。
 # ---------------------------------------------------------------------------
 build_mitmdump() {
     echo "--- Building bundled mitmdump (ADR-001 capture mode) ---"
@@ -86,6 +78,9 @@ echo "--- Building Magic Stack.app ---"
 # Main app venv: 从带 hashes 的 requirements-lock.txt 安装（issue #14）——
 # dev requirements 不决定发布成品；lock 已是主构建依赖的完整超集
 # （rumps/pyobjc/Suanpan/mitmproxy/Pillow/PyInstaller 全部覆盖）。
+# R9 注：lock 含 mitmproxy ≥3.12——MAIN_PYTHON_BIN 的实际下界同为
+# 3.12（「可换 3.9 解释器」不成立）；自有代码 ≥3.9 下界由 CI 语法层
+# 保障，不在构建链。
 MAIN_VENV=".build-venv-main"
 rm -rf "$MAIN_VENV"
 "$MAIN_PYTHON_BIN" -m venv "$MAIN_VENV"
@@ -94,15 +89,15 @@ source "$MAIN_VENV/bin/activate"
 pip install -q --upgrade pip
 pip install -q --require-hashes -r requirements-lock.txt
 
-# Generate the menu-bar state icon if missing (Pillow is in the venv).  The
-# production app icon is icons/magic-ai-router-macos-v2.icns (see APP_ICON
-# below); the menu-bar state icon is loaded and tinted dynamically by
-# menu_builder.py.
-if [ ! -f assets/MenubarIcon.png ]; then
+# Generate the menu-bar state icons when missing OR stale（R9-C2：原只判
+# 缺失——icns 换版后 PNG 永不刷新；且 generate_icon 已纯 Pillow 化，
+# 原 numpy 依赖不在 lock，再生成曾是 ModuleNotFoundError 哑弹）。
+# Pillow is in the venv; the menu-bar state icon is loaded and tinted
+# dynamically by menu_builder.py.
+APP_ICON="icons/magic-ai-router-macos-v2.icns"
+if [ ! -f assets/MenubarIcon.png ] || [ "$APP_ICON" -nt assets/MenubarIcon.png ]; then
     python tools/generate_icon.py
 fi
-
-APP_ICON="icons/magic-ai-router-macos-v2.icns"
 if [ ! -f "$APP_ICON" ]; then
     echo "ERROR: production app icon not found: $APP_ICON" >&2
     exit 1
@@ -119,61 +114,7 @@ python -m PyInstaller \
     --windowed \
     --name "Magic Stack" \
     --add-data "build_time.txt:." \
-    --add-data "shellui/config_ui.html:." \
-    --add-data "shared/locales/zh-CN.json:." \
-    --add-data "shared/locales/en.json:." \
-    --add-data "docs/agent.md:." \
-    --add-data "docs/examples/suanpan.example.yaml:." \
-    --add-data "capture/ai_capture_addon.py:." \
-    --add-data "assets/MenubarIcon.png:." \
-    --add-data "assets/MenubarIcon-green.png:." \
-    --add-data "assets/MenubarIcon-gray.png:." \
-    --add-data "assets/MenubarIcon-yellow.png:." \
-    --add-data "util.py:." \
-    --add-data "shared/stats.py:." \
-    --add-data "tunnel/proxy.py:." \
-    --add-data "tunnel/async_runtime.py:." \
-    --add-data "tunnel/http_framer.py:." \
-    --add-data "tunnel/connection_coordinator.py:." \
-    --add-data "shared/subprocess_monitor.py:." \
-    --add-data "tunnel/retry_scheduler.py:." \
-    --add-data "tunnel/host_key.py:." \
-    --add-data "tunnel/host_key_flow.py:." \
-    --add-data "tunnel/ssh_launch.py:." \
-    --add-data "mpconf/config.py:." \
-    --add-data "shared/config_store.py:." \
-    --add-data "mpconf/config_state.py:." \
-    --add-data "shared/netloc.py:." \
-    --add-data "shared/provider_auth.py:." \
-    --add-data "shellui/menu_builder.py:." \
-    --add-data "shellui/webview_window.py:." \
-    --add-data "shellui/log_window.py:." \
-    --add-data "shellui/bridge_protocol.py:." \
-    --add-data "capture/capture.py:." \
-    --add-data "capture/capture_controller.py:." \
-    --add-data "capture/capture_store.py:." \
-    --add-data "capture/ca_trust.py:." \
-    --add-data "capture/chromium_proxy.py:." \
-    --add-data "capture/resources.py:." \
-    --add-data "capture/mitmdump_entry.py:." \
-    --add-data "sysctl/system_proxy.py:." \
-    --add-data "sysctl/sys_proxy_controller.py:." \
-    --add-data "sysctl/sleep_blocker.py:." \
-    --add-data "sysctl/login_item.py:." \
-    --add-data "sysctl/port_check.py:." \
-    --add-data "shared/keychain.py:." \
-    --add-data "shared/defaults.py:." \
-    --add-data "shared/identity.py:." \
-    --add-data "sysctl/instance_owner.py:." \
-    --add-data "services/config_server.py:." \
-    --add-data "services/suanpan_runtime.py:." \
-    --add-data "services/claude_code_setup.py:." \
-    --add-data "services/lifecycle_runtime.py:." \
-    --add-data "services/balance_usage.py:." \
-    --add-data "services/sp_config.py:." \
-    --add-data "services/authenticated_http.py:." \
-    --add-data "services/provider_probe.py:." \
-    --add-data "services/usage_stats.py:." \
+    $(python tools/resource_manifest.py --pyinstaller-args) \
     --add-data "dist-mitmdump/mitmdump:mitmdump" \
     --collect-all suanpan \
     --collect-all tomlkit \
