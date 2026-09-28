@@ -412,7 +412,7 @@ class ConfigStateStore:
             return False
         return True
 
-    def update_mp(self, mutate, *, skip_server_rows=False) -> SaveResult:
+    def update_mp(self, mutate) -> SaveResult:
         """菜单开关的唯一写径（#46 T1a/d）：写前读新 → mutate → 事务写。
 
         内存副本永不整文件覆写磁盘——stale 副本丢更新的根因即此。读新
@@ -421,6 +421,12 @@ class ConfigStateStore:
         拒绝（load_config 会把损坏折叠成 None → merge 默认整文件覆写，
         静默清空用户配置）。随后走与 UI 保存完全相同的 prepare/commit
         管线（校验 + journal + 0600 原子写）。
+
+        行校验按事务触面（R9-C3 方向 a）：mutate 不触碰 servers 子树
+        （同一对象）即跳过逐服务器行规则——开关 locality 与保存流
+        strictness 各归其位，存量空 host 行不连坐 prevent_sleep/token
+        等顶层字段翻转；servers 被重建/改动即全量校验（保存流与行级
+        翻转恒严）。
         """
         from mpconf.config import load_config, merge_config
         mp_state = self.load().mp_state
@@ -432,8 +438,9 @@ class ConfigStateStore:
         if cfg is None:
             cfg = merge_config(None)
         mutated = mutate(cfg)
+        servers_untouched = mutated.get("servers") is cfg.get("servers")
         plan = self.prepare(mp=mutated,
-                            skip_server_rows=skip_server_rows)
+                            skip_server_rows=servers_untouched)
         if not plan.ok:
             return SaveResult(False, "validate", plan.errors)
         return self.commit(plan)

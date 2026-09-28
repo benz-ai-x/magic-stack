@@ -59,6 +59,41 @@ class TestLoadStates(unittest.TestCase):
             self.assertEqual(result.mp_state, "io_error")
 
 
+class TestUpdateMpRowValidationSurface(unittest.TestCase):
+    """R9-C3 方向 a：行校验按事务触面——不触碰 servers 的开关不被
+    存量空 host 行连坐；触碰 servers 的翻转恒全量校验。"""
+
+    def setUp(self):
+        import tempfile
+        from shared import config_store
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._path = str(pathlib_ := __import__("pathlib").Path(
+            self._tmp.name) / "mp.json")
+        with open(self._path, "w") as f:
+            __import__("json").dump({"servers": [{"name": "legacy-no-host"}]},
+                                    f)
+
+    def test_top_level_toggle_skips_row_rules(self):
+        from mpconf.config_state import ConfigStateStore
+        r = ConfigStateStore(mp_path=self._path,
+                             sp_path=self._path + ".sp.yaml",
+                             keychain=None).update_mp(
+            lambda c: {**c, "prevent_sleep": True})
+        self.assertTrue(r.ok, r.errors)
+
+    def test_servers_toggle_still_validates_rows(self):
+        from mpconf.config_state import ConfigStateStore
+        from mpconf.config import toggle_forward_row
+        r = ConfigStateStore(mp_path=self._path,
+                             sp_path=self._path + ".sp.yaml",
+                             keychain=None).update_mp(
+            lambda c: toggle_forward_row(c, "t-x", 0, True))
+        self.assertFalse(r.ok)
+        self.assertTrue(any("地址不能为空" in e for e in r.errors),
+                        r.errors)
+
+
 class TestPrepareValidation(unittest.TestCase):
     """验收：所有候选配置在首次 mutation 前完成 schema 与跨引用校验。"""
 

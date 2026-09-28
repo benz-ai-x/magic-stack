@@ -46,10 +46,11 @@ def get_local_token(path: str) -> str:
     from mpconf.config_state import ConfigStateStore
     from shared.identity import IdentityMigrationError
     try:
-        # 字段级 upsert：跳过逐服务器行校验（R9——存量空 host 行曾把
-        # token 铸造连坐成「每次调用轮换」，分发的 token 静默 401）
+        # 字段级 upsert：update_mp 按事务触面自动跳过行校验（R9-C3——
+        # 存量空 host 行曾把 token 铸造连坐成「每次调用轮换」，分发
+        # 的 token 静默 401）
         result = ConfigStateStore(mp_path=path, keychain=None).update_mp(
-            lambda c: {**c, FIELD: tok}, skip_server_rows=True)
+            lambda c: {**c, FIELD: tok})
     except IdentityMigrationError as e:
         # 重复 id 的迁移异常（load_config 上抛）：macOS 侧由
         # claude_code_setup 的 except ValueError 兜住，Docker 三入口
