@@ -1,14 +1,16 @@
 """ConfigStateStore（issue #6）：MP + SP + Keychain 的唯一事务边界.
 
-load() / prepare() / commit() 三段式——候选配置在首次 mutation 前完成
+save() 包含 prepare() / commit()——候选配置在首次 mutation 前完成
 全部校验；提交经 journal 可恢复；invalid 主文件永不覆盖最后已知良好的
-.bak；on_sp_saved 只在完整提交后由 commit 触发。
+.bak；on_sp_saved 只在完整提交并释放事务锁后触发。
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import threading
+from functools import wraps
 from typing import NamedTuple
 
 import yaml
@@ -17,6 +19,18 @@ from shared.provider_auth import restore_masked_key
 from shared.server_shape import servers as _servers, ssh_node as _ssh_node
 
 logger = logging.getLogger("magic-proxy.config_state")
+
+# 菜单、HTTP 与恢复会各建 store，必须共享进程内的事务锁。保护范围
+# 包含读旧值/掩码恢复/校验/回滚，不能只锁每次原子替换。
+_TRANSACTION_LOCK = threading.RLock()
+
+
+def _serialized(method):
+    @wraps(method)
+    def run(*args, **kwargs):
+        with _TRANSACTION_LOCK:
+            return method(*args, **kwargs)
+    return run
 
 
 class LoadResult(NamedTuple):
@@ -98,12 +112,14 @@ class ConfigStateStore:
         self.sp_path = sp_path or _cs.get_path("sp")
         self._keychain = keychain
 
+    @_serialized
     def load(self) -> LoadResult:
         mp_state, mp_data, mp_err = _read_one(self.mp_path, json.loads)
         sp_state, sp_data, sp_err = _read_one(self.sp_path, yaml.safe_load)
         return LoadResult(mp_state, sp_state, mp_data, sp_data,
                           mp_err or sp_err)
 
+    @_serialized
     def prepare(self, mp=None, sp=None, *,
                  skip_server_rows=False) -> CommitPlan:
         """分域校验 orchestrator：任何失败都不触碰磁盘。
@@ -307,8 +323,34 @@ class ConfigStateStore:
             pass
         return True
 
+    def save(self, mp=None, sp=None, *, on_committed=None) -> SaveResult:
+        """外部保存入口：在同一事务内准备并提交，成功回调在释放锁后跑。
+
+        prepare/commit 保留供预校验与已构造计划使用；普通写者不能在
+        两阶段之间让其他事务改变掩码恢复、跨配置校验的依据。
+        """
+        with _TRANSACTION_LOCK:
+            result = self._commit_locked(self.prepare(mp=mp, sp=sp))
+        return self._after_commit(result, on_committed)
+
     def commit(self, plan, on_committed=None) -> SaveResult:
-        """journal → MP → SP → Keychain → 清 journal → 回调.
+        """提交已准备的计划；普通保存应调用包含准备阶段的 save。"""
+        with _TRANSACTION_LOCK:
+            result = self._commit_locked(plan)
+        return self._after_commit(result, on_committed)
+
+    @staticmethod
+    def _after_commit(result, on_committed):
+        # 网关 reload 等回调可能等待另一个读配置的线程，不能持锁调用。
+        if result.ok and on_committed is not None:
+            try:
+                on_committed()
+            except Exception:
+                logger.exception("on_committed callback failed")
+        return result
+
+    def _commit_locked(self, plan) -> SaveResult:
+        """journal → MP → SP → Keychain → 清 journal.
 
         任何文件段/Keychain 失败：尽力回滚两文件到旧内容——不暴露
         「接口失败但部分新状态已生效」；回不成则 journal 保留，下次
@@ -379,13 +421,9 @@ class ConfigStateStore:
                 os.unlink(self.journal_path)
         except OSError:
             pass
-        if on_committed is not None:
-            try:
-                on_committed()
-            except Exception:
-                logger.exception("on_committed callback failed")
         return SaveResult(True, None, [])
 
+    @_serialized
     def recover(self) -> bool:
         """journal 重放：跨文件崩溃后补齐到一致状态（幂等）。
 
@@ -412,6 +450,7 @@ class ConfigStateStore:
             return False
         return True
 
+    @_serialized
     def update_mp(self, mutate) -> SaveResult:
         """菜单开关的唯一写径（#46 T1a/d）：写前读新 → mutate → 事务写。
 
@@ -444,5 +483,3 @@ class ConfigStateStore:
         if not plan.ok:
             return SaveResult(False, "validate", plan.errors)
         return self.commit(plan)
-
-

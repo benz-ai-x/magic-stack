@@ -114,6 +114,29 @@ function makeRuntime(fetchImpl) {
   };
 }
 
+test("saveAll keeps edits made while the PUT is pending dirty", async () => {
+  let release, submitted;
+  const response = new Promise(resolve => { release = resolve; });
+  const rt = makeRuntime(async (_url, opts) => {
+    submitted = JSON.parse(opts.body);
+    await response;
+    return { json: async () => ({ ok: true }) };
+  });
+  rt.run(`
+    S=normalizeState({mp:{servers:[],prevent_sleep:false}});
+    baselineState=cloneData(S);baselineRoles={};ccRoles={};activeView='system';
+    toggleSwitch(document.getElementById('cfg-sleep'));
+  `);
+  const pending = rt.run("saveAll(false)");
+  assert.equal(submitted.mp.prevent_sleep, true);
+  rt.run("toggleSwitch(document.getElementById('cfg-sleep'))");
+  release();
+  await pending;
+  assert.equal(rt.run("baselineState.mp.prevent_sleep"), true);
+  assert.equal(rt.run("S.mp.prevent_sleep"), false);
+  assert.equal(rt.run("dirty"), true);
+});
+
 test("a system switch reverted to its baseline clears dirty state", () => {
   const rt = makeRuntime();
   rt.run(`
@@ -279,6 +302,56 @@ test("collectServers reads forward rows into the active server", () => {
     ]), "行序即数组序；空白地址 trim 后缺省 127.0.0.1，空端口为 0，"
       + "无开关（缺省）行为启用");
   assert.equal(rt.run("dirty"), true, "新增转发行必须点亮保存按钮");
+});
+
+test("server reconnect keeps stable ids through role save and runtime polling", async () => {
+  let submitted;
+  const rt = makeRuntime(async (url, opts) => {
+    if (opts?.method === "PUT") {
+      submitted = JSON.parse(opts.body);
+      return { ok: true, json: async () => ({ ok: true }) };
+    }
+    assert.equal(url, "/api/state");
+    return { ok: true, json: async () => ({ mp: { servers: [
+      { id: "t-proxy", is_proxy: false },
+      { id: "t-other", is_proxy: true },
+    ] } }) };
+  });
+  rt.run(`
+    S=normalizeState({mp:{proxy_server_id:'t-proxy',servers:[
+      {id:'t-proxy',is_proxy:true,ssh:{host:'h'}},
+      {id:'t-other',is_proxy:false,ssh:{host:'h2'}}]}});
+    baselineState=cloneData(S);baselineRoles={};ccRoles={};
+    activeView='servers';activeTunnel=0;
+    window.__sent=[];
+    window.webkit={messageHandlers:{bridge:{postMessage:m=>window.__sent.push(m)}}};
+    document.querySelectorAll=()=>[];
+    document.getElementById('viewport').firstElementChild={classList:{add(){}}};
+    renderView();
+  `);
+  const commandInView = () => rt.elements.get("viewport").innerHTML
+    .match(/onclick="(reconnectProxy\(this,'[^']*'\))"/)[1];
+  const click = (command, id) => {
+    rt.run(command.replace("this", "null"));
+    assert.deepEqual(JSON.parse(rt.run("JSON.stringify(window.__sent.at(-1))")),
+      { type: "reconnectProxy", payload: { tunnel_id: id } });
+  };
+  const oldProxyButton = commandInView();
+  click(oldProxyButton, "t-proxy");
+  rt.run("activeTunnel=1;setProxyServer()");
+  const newProxyButton = commandInView();
+  click(newProxyButton, "t-other");
+  assert.equal(rt.run("baselineState.mp.proxy_server_id"), "t-proxy");
+
+  await rt.run("saveAll(false)");
+  assert.equal(submitted.mp.proxy_server_id, "t-other");
+  assert.equal(rt.run("baselineState.mp.proxy_server_id"), "t-other");
+  click(newProxyButton, "t-other");  // 不等待装饰轮询，后端按已保存角色分派
+  await rt.run("nfsRefreshRuntime()");
+  assert.equal(rt.run("S.mp.servers[1].is_proxy"), true);
+  assert.equal(commandInView(), newProxyButton);
+  click(commandInView(), "t-other");
+  click(oldProxyButton, "t-proxy"); // 旧页面按钮也不能把转发误送为接入
 });
 
 test("collectServers reads the forward_autostart switch", () => {

@@ -39,7 +39,7 @@ v0.13.0 配置模型（ADR-011）：`servers[]` 为中心的 **Server → Servic
 
 ### 端口转发（Local Forward）
 
-per-tunnel 的 SSH 本地端口转发（`ssh -L`）：把远程服务器可达的 `remote_host:remote_port` 映射到本机 `127.0.0.1:local_port`。配置存于 `servers[].services.ssh.forwards`（`{local_port, remote_host 缺省 127.0.0.1, remote_port, enabled 缺省 true}`）——**逐条启停**：停用行不进会话 -L 集合、不占本地端口（端口冲突检查退出，与挂载「只在用才占端口」同口径）；菜单「端口映射 ▸」逐条成行点击启停（守卫重建该隧道会话，未运行不拉起；代理隧道的转发行同样可停用，重建=代理会话重启），设置窗转发表内有开关列（保存流生效），argv 由 `ssh_launch.build_tunnel_command` 拼装（`socks5_port=None` 即纯转发模式），绑定地址恒为回环。`ExitOnForwardFailure=yes` 使本地端口被占时该会话独立退避重试。本地端口在 prepare 与 JS 校验双层拦（全局唯一——不撞保留端口、不撞任何其他隧道；镜像契约由「校验镜像与漂移报警」钉住）。「未连接绝不拉起」守卫的单一归宿在 ConnectionCoordinator（`proxy_connected`/`forward_connected` 谓词 + `restart_forward_async(guarded=True)`——菜单翻转、桥接自动应用、保存流同判一处可寻；显式重连 `guarded=False` 保持 Spec-A「会话存在即重建」）。保存后经 bridge `reconnectProxy {if_connected:true, tunnel_id?}` 守卫重连逐隧道定向应用——代理隧道保持「同一身份当前隧道」语义，转发会话按各自连接态守卫（未运行绝不拉起）；行内「测试」走 `probe_forward`（一次性 `ssh -W` 探测**表单当前值**——隧道与转发行都未保存可测，不依赖隧道状态）。
+per-tunnel 的 SSH 本地端口转发（`ssh -L`）：把远程服务器可达的 `remote_host:remote_port` 映射到本机 `127.0.0.1:local_port`。配置存于 `servers[].services.ssh.forwards`（`{local_port, remote_host 缺省 127.0.0.1, remote_port, enabled 缺省 true}`）——**逐条启停**：停用行不进会话 -L 集合、不占本地端口（端口冲突检查退出，与挂载「只在用才占端口」同口径）；菜单「端口映射 ▸」逐条成行点击启停（守卫重建该隧道会话，未运行不拉起；代理服务器的转发行同样只重建独立转发会话，不重启 SSH 接入），设置窗转发表内有开关列（保存流生效），argv 由 `ssh_launch.build_tunnel_command` 拼装（`socks5_port=None` 即纯转发模式），绑定地址恒为回环。`ExitOnForwardFailure=yes` 使本地端口被占时该会话独立退避重试。本地端口在 prepare 与 JS 校验双层拦（全局唯一——不撞保留端口、不撞任何其他隧道；镜像契约由「校验镜像与漂移报警」钉住）。「未连接绝不拉起」守卫的单一归宿在 ConnectionCoordinator（`proxy_connected`/`forward_connected` 谓词 + `restart_forward_async(guarded=True)`——菜单翻转、桥接自动应用、保存流同判一处可寻；显式重连 `guarded=False` 保持 Spec-A「会话存在即重建」）。保存后经 bridge `reconnectProxy {if_connected:true, tunnel_id?}` 守卫重连逐隧道定向应用——全服务器统一按服务器 id 定位转发会话，与代理角色及其变更无关；按各自连接态守卫（未运行绝不拉起）；行内「测试」走 `probe_forward`（一次性 `ssh -W` 探测**表单当前值**——隧道与转发行都未保存可测，不依赖隧道状态）。
 
 ### SSH 调用策略（ssh_launch）
 
@@ -65,7 +65,7 @@ per-tunnel 的 SSH 本地端口转发（`ssh -L`）：把远程服务器可达�
 
 ### 用户意图（UserIntents）
 
-菜单栏与设置窗共用的用户意图执行纪律单一归宿（`services/intents.py`，架构评审 R5）：重连分派（转发会话按 id 守卫重建 / 代理隧道整体重连，guarded=保存流「未连接绝不拉起」、显式=Spec-A 会话存在即重建）、转发会话启停、端口映射行启停写径（事务写 + 守卫重建 + 如实文案）、挂载启停、抓包开关动作半边（端口占用对话与 CA 信任引导等 UI 门控留在 adapter）、打开抓包目录、复制 AI 助手指令（ADR-009 闩锁）。线程纪律独占：慢操作（重连子进程 join ~10s、host-key 首连）daemon 线程后台跑，菜单点击即返回；通知与 dirty 经注入回调。菜单回调（从菜单状态推导意图）与 `_bridge_action`（从显式 action 字符串映射意图）是同一 seam 的两个薄 adapter——一个意图一个家，改一处两边生效。
+菜单栏与设置窗共用的用户意图执行纪律单一归宿（`services/intents.py`，架构评审 R5）：重连分派（转发意图有服务器 id 即重建该服务器的独立转发会话 / 无 id 才重连接入；显式服务器重连按最新已保存代理角色选择接入或转发，guarded=保存流「未连接绝不拉起」、显式=Spec-A 会话存在即重建）、转发会话启停、端口映射行启停写径（事务写 + 守卫重建 + 如实文案）、挂载启停、抓包开关动作半边（端口占用对话与 CA 信任引导等 UI 门控留在 adapter）、打开抓包目录、复制 AI 助手指令（ADR-009 闩锁）。线程纪律独占：慢操作（重连子进程 join ~10s、host-key 首连）daemon 线程后台跑，菜单点击即返回；两种接入的切换、重连和唤醒串行执行，VPN 完全停机后才启动 SSH，唤醒不复活已停止的接入；通知与 dirty 经注入回调。菜单回调（从菜单状态推导意图）与 `_bridge_action`（从显式 action 字符串映射意图）是同一 seam 的两个薄 adapter——一个意图一个家，改一处两边生效。
 
 ### 菜单状态语法（Menu State Grammar）
 
@@ -79,7 +79,7 @@ per-tunnel 的 SSH 本地端口转发（`ssh -L`）：把远程服务器可达�
 
 ### 保存流（Save Flow）
 
-设置界面的两阶段保存状态机（`shellui/config_ui.html` LAYER 1 的 `saveFlow`）：校验 → 保存网关配置（PUT /api/state）→ CC 同步预览（失败关闭）→ 用户确认弹窗 → 写入 Claude Code → baseline 推进 → 分支 toast。一切副作用（fetch/弹窗/toast/baseline 写回）经 deps 注入——真实现与测试桩是同一 seam 的两个 adapter，node 测试直接钉住状态机。调用方（LAYER 2 的 `saveAll`）只做表单 collect 与接线；dirty 真相源在 JS，经 `dirtyProjection` 与保存流同口径。
+设置界面的两阶段保存状态机：一次保存使用同一提交快照，保存期间的新编辑继续保留为未保存状态（`shellui/config_ui.html` LAYER 1 的 `saveFlow`）：校验 → 保存网关配置（PUT /api/state）→ CC 同步预览（失败关闭）→ 用户确认弹窗 → 写入 Claude Code → baseline 推进 → 分支 toast。一切副作用（fetch/弹窗/toast/baseline 写回）经 deps 注入——真实现与测试桩是同一 seam 的两个 adapter，node 测试直接钉住状态机。调用方（LAYER 2 的 `saveAll`）只做表单 collect 与接线；dirty 真相源在 JS，经 `dirtyProjection` 与保存流同口径。
 
 ### 挂载错误可见性链路（2026-09-18 真机案例）
 
@@ -123,7 +123,7 @@ per-tunnel 的 SSH 本地端口转发（`ssh -L`）：把远程服务器可达�
 
 ### 配置事务（ConfigStateStore）
 
-配置持久化的唯一事务边界（`mpconf/config_state.py`）：`load()` 区分 missing/valid/invalid/io_error（损坏不再折叠成空）；`prepare()` 是分域校验的 **orchestrator**（架构评审候选 2：mp 顶层数值/隧道级行/全局端口与挂载点冲突在 `mpconf.validate`，sp schema/路由引用在 `suanpan.validate`——校验器与被校验知识同域演进，文案与顺序被测试钉死）并派生 Keychain 变更计划（密码剥离出候选）；`commit()` 按序执行 journal（载荷内嵌）→ MP → SP → Keychain → 清 journal → 回调（`on_sp_saved` 只在完整提交后）；`recover()` 在启动时幂等重放 journal 补齐跨文件崩溃；`update_mp(mutate)` 是菜单开关的唯一写径——写前读新（磁盘真相）→ 单字段变更 → 同一事务管线，内存副本永不整文件覆写磁盘。invalid 主文件不覆盖最后已知良好的 `.bak`；首创建与保存同一 0600/0700 路径。
+配置持久化的唯一事务边界：同一进程内的保存、菜单读改写和崩溃恢复互斥，成功回调在事务结束后执行（`mpconf/config_state.py`）：`load()` 区分 missing/valid/invalid/io_error（损坏不再折叠成空）；`prepare()` 是分域校验的 **orchestrator**（架构评审候选 2：mp 顶层数值/隧道级行/全局端口与挂载点冲突在 `mpconf.validate`，sp schema/路由引用在 `suanpan.validate`——校验器与被校验知识同域演进，文案与顺序被测试钉死）并派生 Keychain 变更计划（密码剥离出候选）；`commit()` 按序执行 journal（载荷内嵌）→ MP → SP → Keychain → 清 journal → 回调（`on_sp_saved` 只在完整提交后）；`recover()` 在启动时幂等重放 journal 补齐跨文件崩溃；`update_mp(mutate)` 是菜单开关的唯一写径——写前读新（磁盘真相）→ 单字段变更 → 同一事务管线，内存副本永不整文件覆写磁盘。invalid 主文件不覆盖最后已知良好的 `.bak`；首创建与保存同一 0600/0700 路径。
 
 ### 配置存储（ConfigStore）
 

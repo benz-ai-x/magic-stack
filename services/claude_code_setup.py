@@ -295,10 +295,7 @@ def _write_sp_rules(sp, new_rules):
     candidate = dict(sp)
     candidate["rules"] = new_rules
     store = ConfigStateStore(keychain=None)
-    plan = store.prepare(sp=candidate)
-    if not plan.ok:
-        return False, list(plan.errors)
-    result = store.commit(plan)
+    result = store.save(sp=candidate)
     if not result.ok:
         return False, list(result.errors)
     return True, []

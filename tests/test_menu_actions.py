@@ -12,6 +12,8 @@ _svc 退化成只负责 tick/sync_sleep/stop_all 的 MagicMock，子模块改成
 的直属属性。
 """
 import unittest
+import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import app
@@ -69,6 +71,59 @@ def _make_app(config=None):
 
 
 class TestConnectionActions(unittest.TestCase):
+    def test_vpn_to_ssh_waits_for_stop_completion(self):
+        from services.intents import UserIntents
+        from vpn.coordinator import VpnCoordinator
+        a = _make_app()
+        stopping, release, stopped = (threading.Event() for _ in range(3))
+        ssh_started = threading.Event()
+
+        def stop():
+            stopping.set()
+            release.wait(2)
+            client.vpn.status = "stopped"
+            stopped.set()
+
+        client = SimpleNamespace(vpn=SimpleNamespace(status="connected"), stop=stop)
+        a._vpn = VpnCoordinator(
+            get_config=lambda: {}, switch_access=lambda: None,
+            on_established=lambda: None, notify=lambda *args: None,
+            mark_dirty=lambda: None)
+        a._vpn._client = client
+        a._conn.start.side_effect = ssh_started.set
+        a._intents = UserIntents(
+            conn=a._conn, mounts=a._mounts, notify=lambda *args: None,
+            mark_dirty=lambda: None, update_mp=lambda mut: True,
+            reload_config=lambda: None, vpn_disconnect=a._vpn.disconnect,
+            vpn_active=a._vpn.is_active)
+        try:
+            with patch("rumps.alert", return_value=True):
+                a.toggle_ssh(None)
+            self.assertTrue(stopping.wait(1))
+            self.assertFalse(ssh_started.wait(0.05), "VPN still stopping")
+        finally:
+            release.set()
+            self.assertTrue(stopped.wait(1))
+        self.assertTrue(ssh_started.wait(1))
+
+    def test_wake_after_vpn_switch_does_not_restart_access(self):
+        from tunnel.connection_coordinator import ConnectionCoordinator
+        a = _make_app()
+        conn = ConnectionCoordinator(
+            stats=MagicMock(), ssh_log_sink=lambda line: None,
+            get_config=lambda: {}, get_tunnel_password=lambda row: "")
+        conn.stop_access()
+        a._conn = conn
+        a._intents._conn = conn
+        a._vpn = SimpleNamespace(is_active=lambda: True)
+        a._intents._vpn_active = a._vpn.is_active
+        with patch.object(conn, "start_ssh") as start, \
+             patch.object(conn, "reconnect_forwards_now") as forwards:
+            a._on_wake_event()
+        start.assert_not_called()
+        forwards.assert_called_once()
+        a._mounts.reconnect_now.assert_called_once()
+
     def test_cancel_connection_stops_access_only(self):
         """取消连接中的接入（ADR-011 修订）：只取消 -D 建连尝试，
         转发会话不陪葬。"""
@@ -140,8 +195,7 @@ class TestConnectionActions(unittest.TestCase):
         a._conn.stop_access.assert_called_once()
 
     def test_toggle_ssh_confirms_when_vpn_active(self):
-        """VPN 活跃时点 SSH 行：原生确认 → 断 VPN → 恢复 SSH 会话
-        与挂载（显式切换 = 主动恢复）。"""
+        """VPN 活跃时点 SSH 行：原生确认 → 意图层有序切回 SSH。"""
         a = _make_app()
         a._vpn = MagicMock()
         a._vpn.is_active.return_value = True
@@ -153,8 +207,8 @@ class TestConnectionActions(unittest.TestCase):
                              "rumps.alert 第 3 个位置参数即 ok——按钮文案"
                              "必须走关键字（真机 8da4753 TypeError 实锤）")
         self.assertIn("ok", kwargs)
-        a._intents.vpn_disconnect.assert_called_once()
-        a._conn.start.assert_called_once()
+        a._intents.switch_to_ssh.assert_called_once()
+        a._conn.start.assert_not_called()
         # 服务层自管：切换不再有「恢复面」（apply_autostarts 陪葬退役）
         a._conn.apply_autostarts.assert_not_called()
         a._mounts.apply_autostarts.assert_not_called()
@@ -602,6 +656,30 @@ class TestLaunchProxiedRunningApp(unittest.TestCase):
 class TestBridgeActions(unittest.TestCase):
     """设置窗 bridge 动作分发（reconnectProxy / openPath captureDir）。"""
 
+    def test_server_reconnect_follows_saved_role_but_forward_save_keeps_id(self):
+        a = _make_app()
+        for saved_role, clicked, guarded, access in (
+                ("t-a", "t-b", False, False),  # B 尚未保存为代理
+                ("t-b", "t-b", False, True),   # 保存后原按钮应重连接入
+                ("t-b", "t-a", False, False),  # 旧代理 A 现在只重建转发
+                ("t-b", "t-b", True, False)):  # 转发保存恒指向 -L
+            with self.subTest(saved_role=saved_role, clicked=clicked,
+                              guarded=guarded):
+                a._conn.reset_mock()
+                a._conn.proxy_server_id = saved_role
+                a._bridge_action({"type": "reconnectProxy",
+                                  "tunnel_id": clicked,
+                                  "if_connected": guarded})
+                if access:
+                    a._conn.restart.assert_called_once_with(
+                        a._reload_config_or_alert)
+                    a._conn.restart_forward_async.assert_not_called()
+                else:
+                    a._conn.restart.assert_not_called()
+                    a._conn.restart_forward_async.assert_called_once_with(
+                        clicked, a._reload_config_or_alert, guarded=guarded,
+                        thread_name="BridgeReconnectForward")
+
     def test_reconnect_action_runs_reconnect_off_thread(self):
         a = _make_app()
         spawned = []
@@ -609,8 +687,9 @@ class TestBridgeActions(unittest.TestCase):
                              spawned.append((target, name)))
         a._bridge_action({"type": "reconnectProxy"})
         self.assertEqual(len(spawned), 1)
-        # 后台跑的是 intents 的重连核心（真线程纪律在 test_intents 钉住）
-        self.assertEqual(spawned[0][0], a._intents._do_reconnect)
+        a._conn.restart.assert_not_called()
+        spawned[0][0]()
+        a._conn.restart.assert_called_once_with(a._reload_config_or_alert)
 
     def test_open_path_capture_dir_reuses_menu_handler(self):
         a = _make_app()

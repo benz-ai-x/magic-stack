@@ -952,13 +952,12 @@ function dirtyProjection(base,S,baseRoles,roles){
   return{views,counts,total:[...counts.values()].reduce((s,n)=>s+n,0)};
 }
 function forwardsChanged(base,S){
-  // 兼容别名（v0.8 语义消费者）：当前代理隧道的 forwards 是否有变。
+  // 兼容别名：任意服务器的 forwards 是否有变。
   return changedForwardTunnels(base,S).length>0;
 }
 function changedForwardTunnels(base,S){
-  // 多活（v0.9）：返回 forwards 有变的隧道 id 数组——saveFlow 对「正在
-  // 运行的」逐隧道触发守卫重连（代理隧道走代理守卫；转发会话按各自
-  // 连接态定向守卫），未运行的不拉起。
+  // 返回 forwards 有变的服务器 id 数组——saveFlow 逐 id 请求原生侧
+  // 守卫重连，只按 -L 会话连接态判定（未连接绝不拉起）。
   const sig=t=>forwardsOf(t).map(f=>`${f.local_port}|${f.remote_host}|${f.remote_port}|${f.enabled===false?0:1}`).join(';');
   const byId=st=>{const m={};((st&&st.mp&&st.mp.servers)||[]).forEach(t=>{if(t&&t.id)m[t.id]=t;});return m;};
   const a=byId(base),b=byId(S);
@@ -980,7 +979,8 @@ function proxyIndexOf(st){
   return 0;  // id 悬空/缺省回退首条（与服务端 merge 同一解析序）
 }
 async function saveFlow(snap,deps,forceRulesSync){
-  const{S,ccRoles,baselineState,baselineRoles}=snap;
+  // 请求、同步预览与回执推进共用一次提交快照；表单可继续编辑。
+  const{S,ccRoles,baselineState,baselineRoles}=cloneData(snap);
   const proj=dirtyProjection(baselineState,S,baselineRoles,ccRoles);
   const dirty=proj.views.size>0;
   const rolesChanged=countChanges(baselineRoles,ccRoles)>0;
@@ -1032,21 +1032,9 @@ async function saveFlow(snap,deps,forceRulesSync){
       else if(mpChanged)msg+=tt('ui.saveflow.effect_mp');
       else if(spChanged)msg+=tt('ui.saveflow.effect_sp');
       if(fwChangedIds.length&&deps.reconnectForwards){
-        // 多活守卫重连：代理隧道保持 v0.8 语义（保存前后同身份的当前
-        // 隧道才触发）；运行中的转发会话按 tunnel_id 定向守卫——原生侧
-        // 按各自连接态拦，未连接/未运行的绝不拉起
-        const baseIdx=proxyIndexOf(baselineState),saveIdx=proxyIndexOf(S);
-        const baseCur=(baselineState.mp.servers||[])[baseIdx]||null;
-        const saveCur=(S.mp.servers||[])[saveIdx]||null;
-        const sameProxy=!!(baseCur&&saveCur&&baseCur.id&&saveCur.id===baseCur.id);
-        const proxyId=saveCur&&saveCur.id;
-        fwChangedIds.forEach(id=>{
-          if(id===proxyId){
-            if(sameProxy)deps.reconnectForwards(null);
-          }else if(((S.mp.servers||[]).find(t=>t&&t.id===id)||{}).forward_running){
-            deps.reconnectForwards(id);
-          }
-        });
+        // 全服务器的 -L 都是独立会话；实时连接态由原生侧守卫判定，
+        // 不用设置窗的旧运行态快照推断，也不按代理角色改写目标。
+        fwChangedIds.forEach(id=>deps.reconnectForwards(id));
         msg+=tt('ui.saveflow.effect_fw');
       }
       if(syncMessage)msg+='；'+syncMessage;
@@ -1399,9 +1387,9 @@ async function saveAll(forceRulesSync){
       stampSaved:at=>{lastSavedAt=at;},
       setSaving:setSavingState,
       // 端口转发保存后的守卫重连（if_connected：原生侧仅在隧道已连接时
-      // 执行——浏览器直开无桥接时 no-op；tunnelId 定向转发会话，null=代理）
+      // 执行——浏览器直开无桥接时 no-op；按 id 定向转发会话）
       reconnectForwards:(tunnelId)=>nativeSend('reconnectProxy',
-        {if_connected:true,...(tunnelId?{tunnel_id:tunnelId}:{})}),
+        {if_connected:true,tunnel_id:tunnelId}),
       now:()=>new Date().toLocaleTimeString(I18N.lang==='en'?'en-US':'zh-CN'),
     },
     forceRulesSync);
@@ -1939,7 +1927,8 @@ async function testForward(fi,btn){
   btn.disabled=false;btn.textContent=tt('ui.fw.test');
 }
 // 重连 = 菜单栏「重新连接」等价动作（Python 端停隧道→重读配置→重启），
-// 经 bridge 触发；tunnelId 定向该隧道的转发会话（多活），缺省 = 代理会话。
+// 经 bridge 传稳定 id；原生侧按最新已保存角色决定接入/转发，缺省 = 接入。
+// 不在渲染时把角色固化进按钮，保存角色后无需等轮询或重绘。
 // 浏览器直开设置页时无桥接，回退提示。
 function reconnectProxy(btn,tunnelId){
   if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.bridge){
