@@ -18,10 +18,13 @@ from shared import config_store
 def _start_server(**attrs):
     import threading
     s = config_server.ConfigServer()
+    # attrs 打在包装层（与生产 app.py 同款）——经 _forward_seams 转发
+    # 到内层，测试恒走真实接线路径（P0-1 的掩蔽就此结构性消灭）
+    for k, v in attrs.items():
+        setattr(s, k, v)
     s._server = config_server._ThreadingHTTPServer(
         ("127.0.0.1", 0), config_server._Handler, expected_token=s._token)
-    for k, v in attrs.items():
-        setattr(s._server, k, v)
+    s._forward_seams()
     port = s._server.server_address[1]
     s._thread = threading.Thread(target=s._server.serve_forever, daemon=True)
     s._thread.start()

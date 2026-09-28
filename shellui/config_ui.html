@@ -1741,8 +1741,12 @@ async function apiFetch(url,opts){
   }catch(e){_staleStrikes++;if(_staleStrikes>=2)showStaleOverlay();throw e;}
 }
 
-const VPN_ACTIVE=['connecting','connected','reconnecting'];
 const VPN_TAIL_KEYS={connecting:'vpn.tail.connecting',connected:'vpn.tail.connected',reconnecting:'vpn.tail.reconnecting',exiting:'vpn.tail.exiting',error:'vpn.tail.error',stopped:'vpn.tail.stopped'};
+// VPN 目标寻址（R7-C2/R8-P0-2）：稳定 server_id——表单未保存的删除/调序
+// 不再错位写错服务器（服务端按磁盘 id 解析，index 仅为兼容回退）
+function vpnTarget(){collectServers();const ts=S.mp.servers||[],i=activeTunnel;
+  if(!(i>=0&&i<ts.length))return null;
+  const t=ts[i];return (t&&t.id)?{server_id:t.id}:null;}
 let _vpnForceArmedAt=0,_vpnPollTimer=null;
 // 文件选择：原生窗走桥接（pickVpnProfile → NSOpenPanel → 原生读内容喂
 // vpnFileDelivered——WKWebView 的 HTML file input 需 completion block，
@@ -1757,14 +1761,13 @@ function vpnPickProfile(btn){
 // 原生 WKWebView 的投递入口（与浏览器 FileReader 共用同一导入核心）
 window.vpnFileDelivered=function(content){return vpnImportContent(null,content);};
 async function vpnImportContent(btn,content){
-  collectServers();
-  const ts=S.mp.servers||[],i=activeTunnel;
-  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
+  const tgt=vpnTarget();
+  if(!tgt){toast(tt('ui.vpn.no_server'),true);return;}
   if(!content||!content.trim()){toast(tt('ui.vpn.pick_file'),true);return;}
   const orig=btn?btn.textContent:null;
   if(btn){btn.disabled=true;btn.textContent=tt('ui.vpn.importing');}
   try{
-    const r=await apiFetch('/api/vpn-profile',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,content})});
+    const r=await apiFetch('/api/vpn-profile',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({server_id:tgt.server_id,content})});
     const d=await r.json();
     if(!d.ok){_setProbeResult('vpn-feedback','❌ '+(d.error||tt('ui.vpn.import_failed')),'var(--danger)');return;}
     const v=vpnNode(S.mp.servers[i]);
@@ -1779,15 +1782,14 @@ async function vpnImportContent(btn,content){
   finally{if(btn){btn.disabled=false;btn.textContent=orig;renderView();}}
 }
 async function vpnSavePw(btn){
-  collectServers();
-  const ts=S.mp.servers||[],i=activeTunnel;
-  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
+  const tgt=vpnTarget();
+  if(!tgt){toast(tt('ui.vpn.no_server'),true);return;}
   const inp=document.querySelector('[data-vp="pw"]');
   const pw=inp?inp.value:'';
   if(!pw){toast(tt('ui.vpn.pw_empty'),true);return;}
   const orig=btn.textContent;btn.disabled=true;btn.textContent=tt('ui.vpn.pw_saving');
   try{
-    const r=await apiFetch('/api/vpn-credentials',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,password:pw})});
+    const r=await apiFetch('/api/vpn-credentials',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({server_id:tgt.server_id,password:pw})});
     const d=await r.json();
     if(!d.ok){toast(tt('ui.vpn.pw_failed'),true);return;}
     inp.value='';
@@ -1797,31 +1799,26 @@ async function vpnSavePw(btn){
   finally{btn.disabled=false;btn.textContent=orig;renderView();}
 }
 async function vpnInstall(btn){
-  collectServers();
-  const ts=S.mp.servers||[],i=activeTunnel;
-  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
+  const tgt=vpnTarget();
+  if(!tgt){toast(tt('ui.vpn.no_server'),true);return;}
   const orig=btn.textContent;btn.disabled=true;btn.textContent=tt('ui.vpn.installing');
   _setProbeResult('vpn-feedback',tt('ui.vpn.installing_hint'),'var(--muted)');
   try{
-    const r=await apiFetch('/api/vpn-install',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i})});
+    const r=await apiFetch('/api/vpn-install',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({server_id:tgt.server_id})});
     const d=await r.json();
     if(d.ok)_setProbeResult('vpn-feedback','✅ '+tt('ui.vpn.install_ok'),'var(--ok)');
     else{
-      // 错误码分流：缺席二进制（最常见——本机未装）给安装指引，其余如实
-      const key=d.error_code==='openvpn_missing'?'vpn.err.no_binary_code'
-        :d.error_code==='cancelled'?'ui.vpn.install_cancelled'
-        :d.error_code==='sudoers_verify_failed'?'vpn.err.install_verify'
-        :'ui.vpn.install_failed';
-      _setProbeResult('vpn-feedback','❌ '+tt(key),'var(--danger)');
+      // 错误码→文案键映射单一归宿在服务端（vpn/coordinator.install_error_key
+      // 经 error_key 下发——JS 手抄 3/4 条漏 osascript_failed 的漂移面消灭）
+      _setProbeResult('vpn-feedback','❌ '+tt(d.error_key||'ui.vpn.install_failed'),'var(--danger)');
     }
   }catch(e){_setProbeResult('vpn-feedback','❌ '+tt('ui.vpn.install_failed'),'var(--danger)');}
   finally{btn.disabled=false;btn.textContent=orig;}
 }
 async function vpnToggle(btn){
-  collectServers();
-  const ts=S.mp.servers||[],i=activeTunnel;
-  if(!(i>=0&&i<ts.length)){toast(tt('ui.vpn.no_server'),true);return;}
-  const active=VPN_ACTIVE.includes((S.mp.vpn_state&&S.mp.vpn_state.status)||'');
+  const tgt=vpnTarget();
+  if(!tgt){toast(tt('ui.vpn.no_server'),true);return;}
+  const active=!!(S.mp.vpn_state&&S.mp.vpn_state.active);
   const orig=btn.textContent;btn.disabled=true;
   const _arm=(on)=>{
     // 确认期（10s）：按钮改「确认切换」并染警示色——互斥确认不可能错过
@@ -1834,7 +1831,7 @@ async function vpnToggle(btn){
       await apiFetch('/api/vpn-disconnect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({})});
     }else{
       const force=Date.now()-_vpnForceArmedAt<10000;
-      const r=await apiFetch('/api/vpn-connect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({index:i,force})});
+      const r=await apiFetch('/api/vpn-connect',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({server_id:tgt.server_id,force})});
       const d=await r.json();
       if(d.error==='ssh_active'&&!force){
         _vpnForceArmedAt=Date.now();
@@ -1851,13 +1848,13 @@ async function vpnToggle(btn){
     _arm(false);
     scheduleVpnPoll();
   }catch(e){toast(tt('ui.vpn.action_failed'),true);}
-  finally{btn.disabled=false;if(!btn.dataset.armed)btn.textContent=VPN_ACTIVE.includes((S.mp.vpn_state&&S.mp.vpn_state.status)||'')?tt('ui.vpn.disconnect'):orig;}
+  finally{btn.disabled=false;if(!btn.dataset.armed)btn.textContent=!!(S.mp.vpn_state&&S.mp.vpn_state.active)?tt('ui.vpn.disconnect'):orig;}
 }
 function vpnStatusLine(s){
   if(!s||!s.status||s.status==='idle')return tt('ui.vpn.state_idle');
   const bits=[tt(VPN_TAIL_KEYS[s.status]||'vpn.tail.stopped')];
   if(s.tun_ip)bits.push('tun '+s.tun_ip);
-  if(s.error_kind)bits.push(s.error_kind);
+  if(s.error_key)bits.push(tt(s.error_key));
   if(s.error_text){const l=String(s.error_text).trim().split('\n').pop();if(l)bits.push(l.slice(0,80));}
   return bits.join(' · ');
 }
@@ -1880,7 +1877,7 @@ async function vpnRefreshState(){
     const el=document.getElementById('vpn-state');
     if(el)el.textContent=vpnStatusLine(s);
     const tb=document.querySelector('[data-vp="toggle"]');
-    if(tb&&!tb.dataset.armed)tb.textContent=tt(VPN_ACTIVE.includes(s.status)?'ui.vpn.disconnect':'ui.vpn.connect');
+    if(tb&&!tb.dataset.armed)tb.textContent=tt(!!s.active?'ui.vpn.disconnect':'ui.vpn.connect');
   }catch(e){}
 }
 

@@ -909,6 +909,19 @@ class ConfigServer:
             "你可以通过这个 API 读取和修改我的配置，帮我完成设置。"
             + hint)
 
+    def _forward_seams(self):
+        """VPN 动作 seam（R8 P0-1 修复）：app 在包装对象上挂 vpn_*_fn，
+        handler 读内层 self.server——start() 必须转发，否则生产路径
+        恒 503「vpn not available」（M2 出生即带；测试替身直打内层
+        把它掩盖了两轮评审）。与五个构造 kwargs 同款契约；测试经
+        _start_server 走同一转发（结构性消灭掩蔽）。
+        """
+        for _attr in ("vpn_connect_fn", "vpn_disconnect_fn",
+                      "vpn_install_fn"):
+            _fn = getattr(self, _attr, None)
+            if _fn is not None:
+                setattr(self._server, _attr, _fn)
+
     def start(self):
         """Start the server. Returns True on success, False if port unavailable."""
         if self.running:
@@ -924,6 +937,7 @@ class ConfigServer:
         except OSError:
             logger.warning("Config server: port %d unavailable", self._port)
             return False
+        self._forward_seams()
         # port=0 由 OS 分配——回写真实端口（url/port 属性自此不撒谎）
         self._port = self._server.server_address[1]
         self._thread = threading.Thread(
