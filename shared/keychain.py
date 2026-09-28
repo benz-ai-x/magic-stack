@@ -17,6 +17,8 @@ from __future__ import annotations  # PEP 604 注解惰性求值——3.9 下界
 
 import logging
 
+from shared.server_shape import ssh_node
+
 try:
     import Security
 except ImportError:
@@ -32,8 +34,7 @@ SERVICE = "com.magic-proxy"
 # user@host:port），只换字段读取路径。
 
 def _ssh_host(node: dict) -> str:
-    ssh = node.get("ssh") if isinstance(node.get("ssh"), dict) else {}
-    return ssh.get("host", "")
+    return ssh_node(node).get("host", "")
 
 
 def _account(server: dict) -> str:
@@ -45,7 +46,7 @@ def _account(server: dict) -> str:
 
 
 def _legacy_account(server: dict) -> str:
-    ssh = server.get("ssh") if isinstance(server.get("ssh"), dict) else {}
+    ssh = ssh_node(server)
     user = ssh.get("user", "")
     host = ssh.get("host", "")
     port = ssh.get("port", 22)

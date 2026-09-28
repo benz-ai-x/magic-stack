@@ -20,6 +20,7 @@ import time
 
 from mount import remote_setup
 from tunnel import ssh_launch
+from shared.server_shape import ssh_node
 
 logger = logging.getLogger("magic-proxy.server-check")
 
@@ -38,7 +39,7 @@ def probe_inputs(tunnel, keychain_):
     过关 → 探针消费校验归一后的值（strip/int），与历史行为一致——手改
     配置的空白 host 或 "022" 端口不进 ssh argv。
     """
-    ssh = tunnel.get("ssh") if isinstance(tunnel.get("ssh"), dict) else {}
+    ssh = ssh_node(tunnel)
     host = str(ssh.get("host") or "").strip()
     user = str(ssh.get("user") or "").strip()
     try:

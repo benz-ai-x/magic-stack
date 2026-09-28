@@ -6,6 +6,7 @@ import stat
 import subprocess
 
 from shared import config_store
+from shared.server_shape import ssh_node
 APP_SECURITY_DIR = os.path.expanduser("~/.magic-proxy")
 KNOWN_HOSTS_PATH = os.path.join(APP_SECURITY_DIR, "known_hosts")
 _TIMEOUT = 7
@@ -34,14 +35,14 @@ def _lookup_name(host, port):
 
 def inspect(tunnel, force_scan=False):
     """Return (known, scanned_keys, fingerprints, error)."""
-    host = str(tunnel.get("ssh", {}).get("host") or "").strip()
+    host = str(ssh_node(tunnel).get("host") or "").strip()
     try:
         _validate_host(host)
         _ensure_storage()
     except (ValueError, OSError) as exc:
         return False, "", "", str(exc)
     try:
-        port = int(tunnel.get("ssh", {}).get("port", 22))
+        port = int(ssh_node(tunnel).get("port", 22))
     except (TypeError, ValueError):
         return False, "", "", "SSH 端口无效"
     if not host or not 1 <= port <= 65535:
@@ -125,10 +126,10 @@ def accept(keys):
 
 def replace(tunnel, keys):
     """Atomically replace entries for one host after explicit confirmation."""
-    host = str(tunnel.get("ssh", {}).get("host") or "").strip()
+    host = str(ssh_node(tunnel).get("host") or "").strip()
     lock_fd = None
     try:
-        port = int(tunnel.get("ssh", {}).get("port", 22))
+        port = int(ssh_node(tunnel).get("port", 22))
         _validate_host(host)
         _ensure_storage()
         lock_fd = os.open(

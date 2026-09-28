@@ -27,6 +27,7 @@ from capture import capture_store
 from mpconf.config import (load_config, merge_config, decorate_runtime_state,
                            server_by_id,
 )
+from shared.server_shape import ssh_node, with_service_patch
 from vpn import profile as vpn_profile
 from vpn import profile_store as vpn_profile_store
 from services.balance_usage import fetch_balance
@@ -119,7 +120,7 @@ def _read_mp():
         return {}
     for t in cfg.get("servers", []):
         # has_password 属 READONLY_DECORATED_FIELDS（prepare 剥除侧单点声明）
-        _ssh = t.get("ssh") if isinstance(t.get("ssh"), dict) else {}
+        _ssh = ssh_node(t)
         t["has_password"] = bool(
             _ssh.get("auth_type") == "password" and keychain.get_password(t))
     # 掩码契约（#66 复核）：local_client_token 明文永不出进程——UI 回
@@ -176,7 +177,7 @@ def _nfs_credentials(tunnel, sudo_password_override=None):
         return None, "", "", error
     if sudo_password_override:
         return normalized, password, sudo_password_override, ""
-    if (normalized.get("ssh") or {}).get("auth_type") == "password":
+    if ssh_node(normalized).get("auth_type") == "password":
         return normalized, password, password, ""
     return normalized, password, keychain.get_sudo_password(normalized), ""
 
@@ -201,7 +202,7 @@ def nfs_setup_remote(tunnel, mounts, squash_to_ssh_user=False,
         normalized, mounts, password=password, sudo_password=sudo_password,
         squash_to_ssh_user=squash_to_ssh_user)
     if (result.get("ok") and sudo_password_override
-            and (normalized.get("ssh") or {}).get("auth_type") != "password"):
+            and ssh_node(normalized).get("auth_type") != "password"):
         keychain.set_sudo_password(normalized, sudo_password_override)
     return result
 
@@ -680,17 +681,12 @@ class _Handler(BaseHTTPRequestHandler):
         persisted = False
         try:
             def _mark(c):
-                for s in c.get("servers") or []:
-                    if isinstance(s, dict) and s.get("id") == sid:
-                        svc = s.get("services") if isinstance(
-                            s.get("services"), dict) else {}
-                        vpn = dict(svc.get("openvpn")
-                                   if isinstance(svc.get("openvpn"), dict)
-                                   else {})
-                        vpn["profile_set"] = True
-                        svc = dict(svc)
-                        svc["openvpn"] = vpn
-                        s["services"] = svc
+                # 写侧 copy-on-write 原语（shared/server_shape——R7-C4：
+                # 原九行逐层重建手抄，与 toggle_forward_row 同款惯用法）
+                c["servers"] = [
+                    with_service_patch(s, "openvpn", {"profile_set": True})
+                    if isinstance(s, dict) and s.get("id") == sid else s
+                    for s in c.get("servers") or []]
                 return c
             persisted = ConfigStateStore().update_mp(_mark)
         except Exception:

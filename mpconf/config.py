@@ -9,9 +9,10 @@ Schema v2（服务器中心模型，ADR-011）：``servers[]`` 取代
 持有（v1 的 current_tunnel/current_tunnel_id 双表示退役）。v1→v2
 自动迁移保稳定 id——Keychain 槽位（``tunnel:{id}``）随之保值。
 
-本模块是 servers 形状知识的**单一归宿**：归一化（merge 后每台服务器
-ssh/services 全键在场，消费方免防御式取链）与访问器（servers /
-server_by_id / proxy_server / server_forwards / server_nfs）都在此。
+servers 形状知识：**读侧访问器与 enabled 口径的单一归宿在
+shared/server_shape**（本模块转发导出，既有 import 面不破）；本模块
+持有**写侧**——归一化（merge 后每台服务器 ssh/services 全键在场，
+消费方免防御式取链）、迁移与 mutate 原语。
 """
 import json
 import logging
@@ -24,7 +25,7 @@ from shared.identity import IdentityMigrationError, stable_id
 from shared.config_store import DEFAULT_PATHS, atomic_write, get_path
 from shared.server_shape import (  # 转发导出：形状访问器单一归宿
     proxy_server, proxy_server_id, server_by_id, server_forwards,
-    server_nfs, server_openvpn, servers,
+    server_nfs, server_openvpn, servers, ssh_service, with_service_patch,
 )
 
 logger = logging.getLogger("magic-proxy.config")
@@ -381,14 +382,11 @@ def toggle_forward_row(cfg, server_id, index, enabled):
     out = []
     for s in servers(cfg):
         if isinstance(s, dict) and s.get("id") == server_id:
-            svc = dict(s.get("services") or {})
-            ssh_svc = dict(svc.get("ssh") or {})
-            fws = [dict(f) for f in (ssh_svc.get("forwards") or [])]
+            ssh_svc = ssh_service(s)
+            fws = [dict(f) for f in ssh_svc.get("forwards") or []]
             if 0 <= index < len(fws) and isinstance(fws[index], dict):
                 fws[index]["enabled"] = bool(enabled)
-            ssh_svc["forwards"] = fws
-            svc["ssh"] = ssh_svc
-            out.append({**s, "services": svc})
+            out.append(with_service_patch(s, "ssh", {"forwards": fws}))
         else:
             out.append(s)
     return {**cfg, "servers": out}

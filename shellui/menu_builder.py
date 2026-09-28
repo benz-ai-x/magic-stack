@@ -13,7 +13,8 @@ import logging
 import rumps
 from capture import chromium_proxy
 from shared.server_shape import (
-    is_proxy_server, proxy_server, server_forwards, servers, ssh_node,
+    forward_enabled, is_proxy_server, proxy_server, proxy_server_id,
+    server_forwards, servers, ssh_node,
 )
 from vpn.openvpn_client import is_in_flight_status
 from shared import i18n
@@ -350,7 +351,7 @@ class MenuBuilder:
                                for e in (st.mount_states or ()))
         return (
             s, st.paused,
-            st.config.get("proxy_server_id", ""),
+            proxy_server_id(st.config),
             len(tunnels),
             s == "error" and bool(st.ssh_error_msg),
             st.ssh_log if s == "connecting" else "",
@@ -688,7 +689,7 @@ class MenuBuilder:
                 if row is None:
                     continue
                 lp, rp = f.get("local_port"), f.get("remote_port")
-                enabled = f.get("enabled") is not False
+                enabled = forward_enabled(f)
                 # 二元着色（用户拍板）：已映射=绿；未连接/已停用都是
                 # 「没启动」=黑（idle/labelColor）
                 if enabled and session_up:

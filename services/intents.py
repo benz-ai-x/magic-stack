@@ -24,6 +24,7 @@ import threading
 
 from mpconf import config as _mpconf
 from shared import i18n
+from shared.server_shape import forward_enabled
 
 logger = logging.getLogger("magic-proxy.intents")
 
@@ -130,7 +131,7 @@ class UserIntents:
         row = _mpconf.forward_row(_mpconf.load_config(), tunnel_id, index)
         if row is None:
             return
-        enabled = row.get("enabled") is not False
+        enabled = forward_enabled(row)
         lp, rp = row.get("local_port"), row.get("remote_port")
         if not self._update_mp(
                 lambda c: _mpconf.toggle_forward_row(
@@ -143,7 +144,7 @@ class UserIntents:
                 tunnel_id, self._reload_config,
                 thread_name="ToggleForwardRebuild"):
             any_enabled = any(
-                isinstance(f, dict) and f.get("enabled") is not False
+                forward_enabled(f)
                 for f in _mpconf.forward_rows(
                     _mpconf.load_config(), tunnel_id))
             note = i18n.t("notify.forward.note.stopped"

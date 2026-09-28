@@ -9,6 +9,7 @@
 冲突校验拦同端口配置）。
 """
 from tunnel.ssh_session import SshSession
+from shared.server_shape import with_service_patch
 
 NFS_REMOTE_PORT = 2049
 
@@ -41,10 +42,9 @@ class NfsSession(SshSession):
             return None
         row = {"local_port": self.local_port, "remote_host": "127.0.0.1",
                "remote_port": NFS_REMOTE_PORT}
-        services = dict(tunnel.get("services") or {})
-        ssh_svc = dict(services.get("ssh") or {})
+        # 写侧 copy-on-write 原语（shared/server_shape）——与
+        # toggle_forward_row / vpn profile_set 同款惯用法
         return {
-            **tunnel,
+            **with_service_patch(tunnel, "ssh", {"forwards": [row]}),
             "forwards": [],
-            "services": {**services, "ssh": {**ssh_svc, "forwards": [row]}},
         }

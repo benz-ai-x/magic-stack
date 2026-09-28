@@ -12,10 +12,10 @@ import unittest
 
 from shared import server_shape
 from shared.server_shape import (
-    enabled_forwards, first_forward_port, is_proxy_server, nfs_node,
-    openvpn_node, proxy_server, proxy_server_id, server_by_id,
+    enabled_forwards, first_forward_port, forward_enabled, is_proxy_server,
+    nfs_node, openvpn_node, proxy_server, proxy_server_id, server_by_id,
     server_forwards, server_nfs, server_openvpn, servers, servers_by_id,
-    ssh_node, ssh_service,
+    ssh_node, ssh_service, with_service_patch,
 )
 
 
@@ -159,6 +159,33 @@ class TestMpconfReexport(unittest.TestCase):
                      "server_openvpn"):
             self.assertIs(getattr(mc, name), getattr(server_shape, name),
                           f"mpconf.config.{name} 必须转发自 server_shape")
+
+
+class TestWritePrimitive(unittest.TestCase):
+    """with_service_patch：copy-on-write 写侧原语（R7-C4）。"""
+
+    def test_patches_and_fills_layers(self):
+        s = _srv("t-a")
+        out = with_service_patch(s, "openvpn", {"profile_set": True})
+        self.assertTrue(out["services"]["openvpn"]["profile_set"])
+        # 不突变入参 + 缺层补层（ssh 服务节点同时在场）
+        self.assertNotIn("openvpn", s["services"])
+        out2 = with_service_patch({}, "nfs", {"enabled": True})
+        self.assertEqual(out2["services"]["nfs"], {"enabled": True})
+
+    def test_preserves_sibling_keys(self):
+        s = _srv("t-a", nfs={"enabled": False, "local_port": 12049})
+        out = with_service_patch(s, "nfs", {"enabled": True})
+        self.assertEqual(out["services"]["nfs"]["local_port"], 12049)
+        self.assertFalse(s["services"]["nfs"]["enabled"])   # 原件不动
+
+
+class TestForwardEnabled(unittest.TestCase):
+    def test_row_predicate(self):
+        self.assertTrue(forward_enabled({}))
+        self.assertTrue(forward_enabled({"enabled": True}))
+        self.assertFalse(forward_enabled({"enabled": False}))
+        self.assertFalse(forward_enabled("junk"))
 
 
 if __name__ == "__main__":

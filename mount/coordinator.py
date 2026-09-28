@@ -26,7 +26,7 @@ from typing import NamedTuple
 
 from mount import mount_control
 from mount.nfs_session import NfsSession
-from shared.server_shape import server_nfs, servers_by_id
+from shared.server_shape import server_nfs, servers_by_id, ssh_node
 
 logger = logging.getLogger("magic-proxy.nfs-coordinator")
 
@@ -110,7 +110,7 @@ class MountCoordinator:
                 nfs = server_nfs(tunnel)
                 if not (nfs.get("enabled") or nfs.get("mounts")):
                     continue
-                tname = tunnel.get("name") or (tunnel.get("ssh") or {}).get("host") or tid
+                tname = tunnel.get("name") or ssh_node(tunnel).get("host") or tid
                 for row in nfs.get("mounts") or []:
                     if not isinstance(row, dict) or not row.get("name"):
                         continue

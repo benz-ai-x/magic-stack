@@ -88,12 +88,16 @@ def server_forwards(server) -> list:
     return fw if isinstance(fw, list) else []
 
 
+def forward_enabled(row) -> bool:
+    """单条转发实例的启用判定（enabled≠False）——与 enabled_forwards
+    同口径的行级谓词（菜单行渲染 / 意图翻转判定共用）。"""
+    return isinstance(row, dict) and row.get("enabled") is not False
+
+
 def enabled_forwards(server) -> list:
-    """启用中的转发实例（enabled≠False）——「不进 -L 集合 / 不占端口 /
-    会话可存在性」口径的单一归宿（原 tunnel 三处注释互称『同口径』的
-    知识上收于此）。"""
-    return [f for f in server_forwards(server)
-            if isinstance(f, dict) and f.get("enabled") is not False]
+    """启用中的转发实例——「不进 -L 集合 / 不占端口 / 会话可存在性」
+    口径的单一归宿（原三处注释互称『同口径』的知识上收于此）。"""
+    return [f for f in server_forwards(server) if forward_enabled(f)]
 
 
 def first_forward_port(server):
@@ -139,3 +143,14 @@ def is_proxy_server(cfg, server) -> bool:
         return server.get("id") == sid
     rows = servers(cfg)
     return bool(rows) and server is rows[0]
+
+
+def with_service_patch(server, key, patch):
+    """服务节点字段的 copy-on-write 写侧原语（R7-C4）：逐层全新构造
+    （不突变入参），缺层补层——「改 servers 子树一个字段」的写侧惯
+    用法单一归宿（toggle_forward_row / vpn profile_set / NFS 会话派生
+    共用，防每个新持久化点重抄九行逐层重建）。"""
+    svc = dict((server or {}).get("services") or {})
+    node = svc.get(key) if isinstance(svc.get(key), dict) else {}
+    svc[key] = {**node, **patch}
+    return {**server, "services": svc}

@@ -30,6 +30,7 @@ from mpconf.config import (  # noqa: F401 — DEFAULT_CONFIG 是模块导出符�
 from mount.coordinator import MountCoordinator
 from vpn.coordinator import MenuVpn, VpnCoordinator
 from shared.runtime_state import RuntimeProjection
+from shared.server_shape import server_nfs, ssh_node
 from shellui.log_window import LogBuffer, show_log_window
 from shellui.webview_window import show_config_window
 from shellui.menu_builder import MenuBuilder, MenuState, _menubar_color
@@ -325,7 +326,7 @@ class MagicProxyApp(rumps.App):
         main.addItem_(top)
 
     def _tunnel_password(self, tunnel):
-        _auth = (tunnel.get("ssh") or {}).get("auth_type") if tunnel else None
+        _auth = ssh_node(tunnel).get("auth_type") if tunnel else None
         if _auth == "password":
             return keychain.get_password(tunnel)
         return ""
@@ -717,8 +718,7 @@ class MagicProxyApp(rumps.App):
             for t in self._config.get("servers", []):
                 if not (isinstance(t, dict) and t.get("id") == tunnel_id):
                     continue
-                for row in ((((t.get("services") or {}).get("nfs") or {})
-                             .get("mounts")) or []):
+                for row in (server_nfs(t).get("mounts") or []):
                     if isinstance(row, dict) and row.get("name") == name:
                         d = resolve_mount_dir(row)
                         try:
