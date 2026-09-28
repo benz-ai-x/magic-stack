@@ -77,6 +77,10 @@ def assets_fresh(conf_text, mgmt_password) -> bool:
     """
     if not dns_scripts.assets_current():
         return False
+    # 手删洞（R9）：root 文件存在性检查不需读权限——conf/mgmt.pw 被手动
+    # 删除时 stamp 仍判 fresh，spawn 才报 start_failed（可诊断不自愈）
+    if not (os.path.exists(CONF_PATH) and os.path.exists(MGMT_PW_PATH)):
+        return False
     try:
         with open(_stamp_path(), encoding="utf-8") as f:
             stamp = json.load(f)

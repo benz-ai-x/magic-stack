@@ -104,12 +104,16 @@ class ConfigStateStore:
         return LoadResult(mp_state, sp_state, mp_data, sp_data,
                           mp_err or sp_err)
 
-    def prepare(self, mp=None, sp=None) -> CommitPlan:
+    def prepare(self, mp=None, sp=None, *,
+                 skip_server_rows=False) -> CommitPlan:
         """分域校验 orchestrator：任何失败都不触碰磁盘。
 
         校验顺序与文案被测试钉死；merge 默认值必须在校验之后
         （merge_config 会把非法端口/负保留静默重置为默认，前置会让
-        数值约束在真实入口永不触发）。
+        数值约束在真实入口永不触发）。skip_server_rows=True 跳过
+        逐服务器行规则（字段级 upsert 用——铸造 local token 不该
+        被既有空 host 行连坐：R9 交互缺陷修复，token 曾因此每次
+        调用轮换、已分发的 ANTHROPIC_AUTH_TOKEN 静默 401）。
         """
         from mpconf import validate as _mp_validate
         errors = []
@@ -118,7 +122,8 @@ class ConfigStateStore:
 
         if mp_c is not None:
             errors += _mp_validate.numeric_errors(mp_c)
-            errors += _mp_validate.server_rows_errors(mp_c)
+            if not skip_server_rows:
+                errors += _mp_validate.server_rows_errors(mp_c)
         if sp_c is not None:
             from suanpan import validate as _sp_validate
             errors += _sp_validate.sp_errors(sp_c)
@@ -407,7 +412,7 @@ class ConfigStateStore:
             return False
         return True
 
-    def update_mp(self, mutate) -> SaveResult:
+    def update_mp(self, mutate, *, skip_server_rows=False) -> SaveResult:
         """菜单开关的唯一写径（#46 T1a/d）：写前读新 → mutate → 事务写。
 
         内存副本永不整文件覆写磁盘——stale 副本丢更新的根因即此。读新
@@ -427,7 +432,8 @@ class ConfigStateStore:
         if cfg is None:
             cfg = merge_config(None)
         mutated = mutate(cfg)
-        plan = self.prepare(mp=mutated)
+        plan = self.prepare(mp=mutated,
+                            skip_server_rows=skip_server_rows)
         if not plan.ok:
             return SaveResult(False, "validate", plan.errors)
         return self.commit(plan)

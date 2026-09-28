@@ -639,6 +639,9 @@ class MagicProxyApp(rumps.App):
         """取消连接中的接入（菜单 SSH 行点击/连接中态）：只取消 -D
         会话的建连尝试——转发会话是服务层，不陪葬（ADR-011 修订）。"""
         self._conn.stop_access()
+        # R9：四站点收齐（connecting 期不持 caffeinate，但不变式不
+        # 寄存于 tick 存活——#118 P0 教训）
+        self._after_access_change()
 
     def stop_proxy_tunnel(self, _):
         """停止接入（菜单 SSH 行点击）：只停 -D 会话（含重试调度/本地

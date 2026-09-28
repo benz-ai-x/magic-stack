@@ -44,8 +44,18 @@ def get_local_token(path: str) -> str:
         return tok
     tok = secrets.token_hex(16)
     from mpconf.config_state import ConfigStateStore
-    result = ConfigStateStore(mp_path=path, keychain=None).update_mp(
-        lambda c: {**c, FIELD: tok})
+    from shared.identity import IdentityMigrationError
+    try:
+        # 字段级 upsert：跳过逐服务器行校验（R9——存量空 host 行曾把
+        # token 铸造连坐成「每次调用轮换」，分发的 token 静默 401）
+        result = ConfigStateStore(mp_path=path, keychain=None).update_mp(
+            lambda c: {**c, FIELD: tok}, skip_server_rows=True)
+    except IdentityMigrationError as e:
+        # 重复 id 的迁移异常（load_config 上抛）：macOS 侧由
+        # claude_code_setup 的 except ValueError 兜住，Docker 三入口
+        # 裸奔即 boot 崩——此处按「未持久化」降级（token 仍返回）
+        logger.warning("local token 未持久化（迁移异常 %s）", e)
+        return tok
     if not result.ok:
         logger.warning("local token 未持久化（%s）——本次会话仍可用，"
                        "下次启动将重新生成", result.errors[:1] or result.code)

@@ -22,5 +22,9 @@ def _sandbox_real_config_paths(tmp_path_factory):
         "codex_config": str(sandbox / "codex-config.toml"),
         "opencode_config": str(sandbox / "opencode.json"),
         "zcode_config": str(sandbox / "zcode-config.json"),
+        # vpn profile 目录（spec §4）+ install stamp（R8-C1）——第 7 键
+        # 接线（R9：docstring 的「不可能写到真实 ~/.magic-proxy*」承诺
+        # 对 VPN 面此前不成立，散装 patch.dict 收敛进会话沙箱）
+        "vpn_profiles_dir": str(sandbox / "vpn-profiles"),
     }):
         yield

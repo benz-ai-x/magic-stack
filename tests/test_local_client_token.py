@@ -18,6 +18,39 @@ from shared.provider_auth import build_outbound_headers
 
 
 class TestTokenLifecycle(unittest.TestCase):
+    def test_empty_host_rows_do_not_rotate_token(self):
+        """R9 交互缺陷回归：存量空 host 行（R8-C2 之前可落盘）不得把
+        token 铸造连坐成每次调用轮换——分发的 ANTHROPIC_AUTH_TOKEN
+        会静默 401。字段级 upsert 跳过逐服务器行校验。"""
+        import json as _json
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = str(Path(d) / "magic-proxy.json")
+            with open(cfg_path, "w") as f:
+                _json.dump({"servers": [{"name": "legacy-no-host"}]}, f)
+            tok1 = get_local_token(cfg_path)
+            tok2 = get_local_token(cfg_path)
+            self.assertEqual(tok1, tok2, "空 host 行不得使 token 轮换")
+            with open(cfg_path) as f:
+                self.assertEqual(_json.load(f).get("local_client_token"), tok1)
+
+    def test_duplicate_id_migration_error_degrades_not_crashes(self):
+        """R9：重复 id 的迁移异常（load_config 上抛 IdentityMigrationError，
+        ValueError 子类）——Docker 三入口无兜底即 boot 崩；此处按
+        「未持久化」降级（token 仍返回、原文件不动）。"""
+        import json as _json
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = str(Path(d) / "magic-proxy.json")
+            dup = {"schema_version": 2, "proxy_server_id": "t-x",
+                   "servers": [
+                       {"id": "t-x", "ssh": {"host": "a", "port": 22}},
+                       {"id": "t-x", "ssh": {"host": "b", "port": 22}}]}
+            with open(cfg_path, "w") as f:
+                _json.dump(dup, f)
+            tok = get_local_token(cfg_path)     # 不上抛
+            self.assertTrue(tok)
+            with open(cfg_path) as f:
+                self.assertEqual(_json.load(f), dup)   # 原文件不动
+
     def test_corrupt_config_never_overwritten(self):
         """R8-C3 回归：主文件损坏时 token 仍可取，但文件内容绝不覆写
         （此前裸 read-modify-write 会把整文件重写成单键 = 配置蒸发）。"""

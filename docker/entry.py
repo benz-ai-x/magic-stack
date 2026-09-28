@@ -269,6 +269,9 @@ def main(argv=None) -> int:
         return run_config_ui()
     if argv[0] == "config-token":
         paths = default_paths()
+        # R9：与其余子命令共用接缝（不调 redirect_paths 时 journal 落
+        # ~/.suanpan.yaml.txn.json 而非 /data 卷——非 root 即写失败）
+        redirect_paths(paths["sp"], paths["mp"], paths["claude_settings"])
         print(config_token(paths["mp"]))
         return 0
     print("用法: entry.py [serve | sync-claude-code [--dry-run] | "
@@ -291,8 +294,11 @@ def config_token(mp_path: str) -> str:
     return get_local_token(mp_path)
 
 
+from services.config_server import CONFIG_PORT
+
+
 def make_config_server(mp_path: str, sp_path: str, on_sp_saved=None,
-                       port: int = 9528):
+                       port: int = CONFIG_PORT):
     """Docker 形态的 config server 装配：差异全部是构造参数。
 
     重定向 PATHS 三键后构造参数化 ConfigServer——绑 0.0.0.0（容器外
