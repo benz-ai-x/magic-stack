@@ -253,6 +253,12 @@ suanpan/ ── AI 路由网关子包（ADR-010 三协议入站：Anthropic Mess
   usage_log.py ── 追加写 JSONL + 轮转 + usage_entry_from_wire 线格式 usage→UsageEntry 单一转换（proxy 四车道消费）
   prewarmer.py ── 启动预热 best-effort adapter
   __main__.py ── `python3 -m suanpan` 独立启动入口
+
+docker/ ── 容器装配形态（与 macOS 壳共享 services/，差异全构造参数——见「部署形态」词条）
+  entry.py ── 容器入口：redirect_paths 装配（serve/sync-claude-code/
+    sync-agent/config-ui/config-token 五子命令共用——config-token 亦走
+    接缝防 journal 落卷外）+ 网关 watchdog 喂拍（策略体 services/
+    gateway_watchdog，装配处抄写视为回归）
 ```
 
 **线程模型：** 主线程跑 rumps NSRunLoop（菜单栏）。后台 daemon 线程跑：asyncio 事件循环（代理服务 ProxyRuntime）、Suanpan 网关（uvicorn）、config server（http.server）。

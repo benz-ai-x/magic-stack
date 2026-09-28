@@ -139,45 +139,58 @@ class TestClaudeMdDeclaresCodeAsTruth:
 
 
 class TestClaudeMdCoversAllModules:
-    """Every repo module appears in CLAUDE.md's module inventory.
+    """Every repo module appears in CLAUDE.md's per-domain module inventory.
 
-    Root modules must appear before the suanpan subtree; suanpan modules
-    inside it — the same basename (config.py, proxy.py) exists in both,
-    so per-section matching is what actually catches drift.
+    R9-C1：守卫此前只钉 root + suanpan——其余九域 ~80 行模块描述删行
+    不红，CLAUDE.md「逐模块清单是防漂移守卫钉住的契约面」宣称虚标。
+    现按域分节钉全量：每域必须有 `<pkg>/ ──` 段，段内 `<name>.py ──`
+    行覆盖该域全部模块（同名 basename 跨域存在——config.py/proxy.py/
+    coordinator.py——按节匹配才真正防漂移）。
     """
 
-    _SUANPAN_MARKER = "suanpan/ ── AI 路由网关子包"
+    # 与 test_arch_imports._PACKAGES 同集（docker 入装配层段）
+    _PACKAGES = ("shared", "mpconf", "tunnel", "mount", "vpn", "shellui",
+                 "capture", "sysctl", "services", "suanpan", "docker")
+
+    @classmethod
+    def _section(cls, lines, package):
+        marker = f"{package}/ ──"
+        start = next((i for i, line in enumerate(lines)
+                      if line.startswith(marker)), None)
+        if start is None:
+            return None
+        section = [lines[start]]
+        for line in lines[start + 1:]:
+            if not line.strip():
+                break
+            if line.startswith((" ", "\t")):
+                # 缩进行：模块行收录；条目续行（多行描述）跳过但不断节
+                if re.match(r"^\s+[\w.]+\.py\s+──", line):
+                    section.append(line)
+            else:
+                break   # 下一节标记/栅栏结束——列 0 起始
+        return "\n".join(section)
 
     def test_every_module_mentioned(self):
         claude = CLAUDE_MD.read_text(encoding="utf-8")
         lines = claude.splitlines()
-        marker_idx = next(
-            i for i, line in enumerate(lines) if line.startswith(self._SUANPAN_MARKER))
-        # The suanpan subtree is the marker line plus its indented
-        # `<name>.py ──` children; the fence / next sibling ends it.
-        suanpan_lines = [lines[marker_idx]]
-        for line in lines[marker_idx + 1:]:
-            if re.match(r"^\s+[\w.]+\.py\s+──", line):
-                suanpan_lines.append(line)
-            else:
-                break
-        suanpan_section = "\n".join(suanpan_lines)
-        root_section = "\n".join(
-            line for line in lines if line not in suanpan_lines)
-
+        covered_pkgs = set(self._PACKAGES)
+        root_section = "\n".join(lines)
+        for pkg in self._PACKAGES:
+            section = self._section(lines, pkg)
+            assert section is not None, (
+                f"CLAUDE.md 缺「{pkg}/ ──」模块清单段（防漂移守卫按域钉"
+                f"全量——新增域须同步文档）")
+            modules = {p.name for p in (ROOT / pkg).glob("*.py")} - _SKIP
+            for name in sorted(modules):
+                assert name in section, (
+                    f"{pkg}/{name} not mentioned in its CLAUDE.md section")
+            covered_pkgs.discard(pkg)
+        # 根目录模块（app.py/util.py）在任何段之外提及即可
         root_modules = {p.name for p in ROOT.glob("*.py")} - _SKIP
-        suanpan_modules = {p.name for p in (ROOT / "suanpan").glob("*.py")} - _SKIP
-
-        def covered(section, name):
-            stem = name[:-3]  # strip ".py" — the 其他小模块 line lists bare stems
-            return name in section or stem in section
-
         for name in sorted(root_modules):
-            assert covered(root_section, name), \
-                f"{name} not mentioned in CLAUDE.md root module list"
-        for name in sorted(suanpan_modules):
-            assert covered(suanpan_section, name), \
-                f"suanpan/{name} not mentioned in CLAUDE.md suanpan section"
+            assert name in root_section, (
+                f"{name} not mentioned in CLAUDE.md root module list")
 
 
 class TestSettingsNavigationDocumented:
