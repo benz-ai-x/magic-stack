@@ -29,8 +29,11 @@ if [ "${MP_ALLOW_DIRTY_RELEASE:-0}" != "1" ]; then
         echo "工作区不干净，拒绝发布（紧急覆盖：MP_ALLOW_DIRTY_RELEASE=1）"; exit 1
     fi
     TAG=$(git -C "$ROOT" describe --tags --exact-match HEAD 2>/dev/null || true)
+    # printf 传参展开（2026-09-28：内联 "$VERSION（" 在 macOS bash 3.2 的
+    # 非 ASCII 邻接处解析成畸形变量名——此分支首次被走到才暴露）
     [ "$TAG" = "v$VERSION" ] \
-        || { echo "当前提交必须标记为 v$VERSION（实际: ${TAG:-无 tag}）"; exit 1; }
+        || { printf '当前提交必须标记为 %s（实际: %s）\n' \
+               "v$VERSION" "${TAG:-无 tag}"; exit 1; }
 fi
 
 # ── 选择签名身份 ───────────────────────────────────────────────
