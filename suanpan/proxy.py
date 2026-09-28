@@ -183,16 +183,18 @@ def agent_from_user_agent(user_agent: str | None) -> str:
     return ""
 
 
-def make_502(ctx: "_LaneCtx", error: str, logger: "UsageLogger", *,
+def make_502(ctx: "_LaneCtx", error: str, logger: "UsageLogger | None" = None, *,
              wire: Literal["anthropic", "openai"] = "anthropic") -> JSONResponse:
-    """502 失败响应 + 全零用量记账（四车道共用塑形）。
+    """502 失败响应 + 全零用量记账（四车道共用塑形；R8-C7 记账半边
+    按需——logger=None 跳过，count_tokens 等无用量端点不再手拼孪生）。
 
     ``wire`` 决定错误体形状：anthropic 入站客户端认平铺 error；openai
     入站（chat/responses 直通）认 ``error.message`` 对象——曾两份孪生
     （make_502 vs make_502_openai），签名漂移使四车道发送块无法机械
     合一，现收敛为一个塑形器。
     """
-    logger.write(
+    if logger is not None:
+        logger.write(
         UsageEntry(
             provider=ctx.provider,
             source_model=ctx.source_model,
@@ -591,12 +593,9 @@ async def forward_count_tokens(
     except httpx.HTTPError as e:
         error = f"{type(e).__name__}: {e}"
         _log.error("upstream_error provider=%s error=%s", provider_name, error)
-        return JSONResponse(
-            {"error": "backend request failed", "provider": provider_name,
-             "last_error": error},
-            status_code=502,
-            headers={"x-suanpan-provider": provider_name},
-        )
+        # count_tokens 无用量可记——logger=None 走纯塑形（R8-C7：此前
+        # 与 make_502 的 anthropic 线格逐字手拼孪生，契约第二归宿）
+        return make_502(ctx, error)
 
     out_headers = _lane_out_headers(r.headers, ctx, decision)
     return JSONResponse(
