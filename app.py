@@ -217,7 +217,7 @@ class MagicProxyApp(rumps.App):
                 capture_active=self._capture_ctrl.actively_running,
                 forwards=tuple(self._conn.forward_sessions()),
                 mounts=tuple(self._mounts.mount_states()),
-                vpn=(self._vpn.snapshot()
+                vpn=(self._vpn.projection()
                      if getattr(self, "_vpn", None) is not None
                      else None)),
             on_mp_saved=self._on_mp_saved,
@@ -370,15 +370,13 @@ class MagicProxyApp(rumps.App):
 
     # ── VPN（M2 接线，spec §3.3/§7.2）────────────────────
 
-    def _vpn_connect_intent(self, index, force=False):
-        """设置窗 HTTP 入口：同步校验（可拒）→ 意图层后台执行。
-        返回 dict 直接作为端点响应（错误用结构化码，文案在 UI 侧映射）。"""
-        logger.info("vpn connect intent: index=%r force=%r", index, force)
-        rows = servers(self._config)
-        if (isinstance(index, bool) or not isinstance(index, int)
-                or not 0 <= index < len(rows)):
-            return {"ok": False, "error": "bad_index"}
-        server = rows[index]
+    def _vpn_connect_intent(self, server, force=False):
+        """设置窗 HTTP 入口（server 已由端点按磁盘稳定 id 解析——R7-C2
+        后单一真相源，不再内存副本二次解 index）：同步校验（可拒）→
+        意图层后台执行。返回 dict 直接作为端点响应（错误用结构化码，
+        文案在 UI 侧映射）。"""
+        logger.info("vpn connect intent: server=%s force=%r",
+                    (server or {}).get("id"), force)
         # profile 前置（含落盘文件判定）单一归宿在 vpn/coordinator
         code = self._vpn.connect_precheck(server)
         if code:

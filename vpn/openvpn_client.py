@@ -82,6 +82,24 @@ def adopt_stale_openvpn(mgmt_password, port, *, timeout=2.0):
         return False
 
 
+# 状态语义档（R7-C2）：行为面与显示面两套成员关系是**故意分歧**——
+# exiting 期进程收尾、隧道可能仍在：显示面算「忙」（黄点），行为面
+# 已可发起新连接（toggle 走连接分支重建）。此前 6 份字面量散落
+# app/menu/JS 且互不一致，现归此两谓词单一归宿。
+_ACTIVE_STATUSES = ("connecting", "connected", "reconnecting")
+_IN_FLIGHT_STATUSES = ("connecting", "reconnecting", "exiting")
+
+
+def is_active_status(status) -> bool:
+    """行为面活跃（toggle 分派 / HTTP 判定）：含 connected。"""
+    return status in _ACTIVE_STATUSES
+
+
+def is_in_flight_status(status) -> bool:
+    """显示面进行中（黄点档）：含 exiting、不含 connected。"""
+    return status in _IN_FLIGHT_STATUSES
+
+
 class VpnState:
     """隧道层状态投影（进程层 status 之外的单一真相）。"""
 

@@ -183,6 +183,24 @@ class TestProjections(unittest.TestCase):
             (mv.status, mv.server_name, mv.error_kind, mv.tun_ip),
             ("connected", "s1", "tls_error", "10.8.0.2"))
 
+    def test_projection_enriches_semantics(self):
+        """projection：快照 + active/in_flight 布尔 + error_key（JS 侧
+        状态集字面量与手抄映射表的替代物）。"""
+        vpn = _make([])
+        self.assertIsNone(vpn.projection())     # 无客户端 → None
+        vpn._client = MagicMock()
+        vpn._client.snapshot.return_value = {
+            "status": "exiting", "error_kind": "", "tun_ip": "10.0.0.1"}
+        proj = vpn.projection()
+        self.assertFalse(proj["active"])        # exiting：行为面不活跃
+        self.assertTrue(proj["in_flight"])      # 显示面忙
+        self.assertEqual(proj["error_key"], "")
+        vpn._client.snapshot.return_value = {
+            "status": "error", "error_kind": "tls_error", "tun_ip": ""}
+        proj = vpn.projection()
+        self.assertTrue(proj["active"] is False)
+        self.assertEqual(proj["error_key"], "vpn.err.tls")
+
     def test_connect_precheck_profile_file_wins(self):
         """落盘文件为准：profile_set 缺但文件在 → 可连（真机案例：
         导入后未保存被 no_profile 弹回）。"""

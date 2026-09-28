@@ -77,8 +77,8 @@ class TestVpnEndpoints(unittest.TestCase):
             vpn_install_fn=lambda t: self.install_impl(t))
         self.token = self.server._token
 
-    def _connect(self, index, force=False):
-        self.connect_calls.append((index, force))
+    def _connect(self, tunnel, force=False):
+        self.connect_calls.append((tunnel.get("id"), force))
         return {"ok": True}
 
     def _disconnect(self):
@@ -149,10 +149,17 @@ class TestVpnEndpoints(unittest.TestCase):
         self.assertEqual(calls[0].get("id"), "t-aaa")  # 按磁盘真相解行
 
     def test_connect_seam_passthrough(self):
-        code, d = self._post("/api/vpn-connect", {"index": 0, "force": True})
+        # server_id 稳定寻址（R7-C2）；index 兼容回退仍在（旧载荷）
+        code, d = self._post("/api/vpn-connect",
+                             {"server_id": "t-aaa", "force": True})
         self.assertEqual(code, 200)
         self.assertTrue(d["ok"])
-        self.assertEqual(self.connect_calls, [(0, True)])
+        self.assertEqual(self.connect_calls, [("t-aaa", True)])
+        code, d = self._post("/api/vpn-connect", {"index": 1, "force": True})
+        self.assertEqual(self.connect_calls[-1], ("t-bbb", True))
+        code, d = self._post("/api/vpn-connect",
+                             {"server_id": "t-gone", "force": True})
+        self.assertEqual(code, 400)      # 未知 id 显式拒，不再静默错位
 
     def test_connect_without_seam_503(self):
         server, port = _start_server()

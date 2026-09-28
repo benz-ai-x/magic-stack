@@ -15,6 +15,7 @@ from capture import chromium_proxy
 from shared.server_shape import (
     is_proxy_server, proxy_server, server_forwards, servers, ssh_node,
 )
+from vpn.openvpn_client import is_in_flight_status
 from shared import i18n
 from shared.i18n import DEFAULT_LANGUAGE
 from util import resource_path as _resource_path, truncate as _truncate
@@ -47,7 +48,7 @@ def _menubar_color(ssh_status, paused, vpn_status):
     connecting 同档黄。SSH error = 未连接 → 灰（详情进菜单）。"""
     if vpn_status == "connected":
         return "green"
-    if vpn_status in ("connecting", "reconnecting", "exiting"):
+    if is_in_flight_status(vpn_status):
         return "yellow"
     if paused or ssh_status == "connecting":
         return "yellow"
@@ -837,7 +838,7 @@ class MenuBuilder:
             vpn_title = i18n.t("access.vpn.connected",
                                ip=st.vpn_tun_ip or st.vpn_server or "")
             vpn_kind = "ok"            # 绿 —— 与菜单栏图标同语义
-        elif st.vpn_status in ("connecting", "reconnecting", "exiting"):
+        elif is_in_flight_status(st.vpn_status):
             vpn_title = i18n.t(
                 "access.vpn.reconnecting"
                 if st.vpn_status == "reconnecting" else "access.vpn.connecting")

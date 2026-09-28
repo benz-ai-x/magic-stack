@@ -25,8 +25,8 @@ from mount import remote_setup
 from services import claude_code_setup
 from capture import capture_store
 from mpconf.config import (load_config, merge_config, decorate_runtime_state,
-                           server_openvpn)
-from vpn import privilege as vpn_privilege
+                           server_by_id,
+)
 from vpn import profile as vpn_profile
 from vpn import profile_store as vpn_profile_store
 from services.balance_usage import fetch_balance
@@ -525,7 +525,7 @@ class _Handler(BaseHTTPRequestHandler):
         400 for bad index / no servers, 200 with {"ok", "error"?} once the
         probe actually runs（隧道解析与 test-forward/NFS 端点共用
         _saved_tunnel_by_index）。"""
-        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        tunnel, error = self._resolve_vpn_target(data)
         if error:
             self._json(400, {"ok": False, "error": error})
             return
@@ -657,7 +657,7 @@ class _Handler(BaseHTTPRequestHandler):
         """导入 .ovpn：净化 → 0600 落盘 → 剥除清单/凭证需求回执。
         profile_set 布尔不在此翻转——UI 按导入成功置位、随保存流持久化
         （两阶段保存契约，spec §7.2）。"""
-        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        tunnel, error = self._resolve_vpn_target(data)
         if error:
             self._json(400, {"error": error})
             return
@@ -706,7 +706,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _api_vpn_credentials(self, data):
         """VPN 密码 → Keychain 槽（用户名是 config 字段走正常保存流）。"""
-        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        tunnel, error = self._resolve_vpn_target(data)
         if error:
             self._json(400, {"error": error})
             return
@@ -724,7 +724,7 @@ class _Handler(BaseHTTPRequestHandler):
         if fn is None:
             self._json(503, {"error": "vpn not available"})
             return
-        tunnel, error = self._saved_tunnel_by_index(data.get("index"))
+        tunnel, error = self._resolve_vpn_target(data)
         if error:
             self._json(400, {"error": error})
             return
@@ -732,17 +732,24 @@ class _Handler(BaseHTTPRequestHandler):
         if code == "no_profile":
             self._json(400, {"error": i18n.t("vpn.err.not_imported")})
             return
-        self._json(200, {"ok": ok, "error_code": "" if ok else code})
+        from vpn.coordinator import install_error_key
+        self._json(200, {
+            "ok": ok, "error_code": "" if ok else code,
+            "error_key": "" if ok else install_error_key(code)})
 
     def _api_vpn_connect(self, data):
         fn = getattr(self.server, "vpn_connect_fn", None)
         if fn is None:
             self._json(503, {"error": "vpn not available"})
             return
+        tunnel, error = self._resolve_vpn_target(data)
+        if error:
+            self._json(400, {"error": error})
+            return
         # windowed app 的 stderr 丢失（ThreadingMixIn handle_error 无处落）
         # ——异常就地捕获：日志 + detail 回给 UI，真机定位不再靠猜
         try:
-            result = fn(data.get("index"), force=data.get("force") is True)
+            result = fn(tunnel, force=data.get("force") is True)
         except Exception:
             logger.exception("vpn-connect handler failed")
             import traceback
@@ -782,6 +789,19 @@ class _Handler(BaseHTTPRequestHandler):
         if not 0 <= idx < len(rows):
             return None, "服务器索引越界"
         return rows[idx], ""
+
+    @staticmethod
+    def _resolve_vpn_target(data):
+        """VPN 端点实体寻址（R7-C2）：server_id 优先（稳定 id——表单
+        未保存的删除/调序不错位，.ovpn 永不写错服务器），tunnel 表单
+        对象次之，index 兼容回退（旧载荷）。"""
+        sid = data.get("server_id")
+        if isinstance(sid, str) and sid:
+            tunnel = server_by_id(_read_mp() or {}, sid)
+            if tunnel is None:
+                return None, "未知服务器"
+            return tunnel, ""
+        return _Handler._resolve_tunnel(data)
 
     @staticmethod
     def _resolve_tunnel(data):

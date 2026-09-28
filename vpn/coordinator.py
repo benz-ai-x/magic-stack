@@ -31,7 +31,9 @@ from shared.defaults import VPN_MANAGEMENT_PORT
 from shared import i18n
 from shared.server_shape import server_openvpn, servers
 from vpn import dns_scripts, privilege, profile_store
-from vpn.openvpn_client import VpnClient, adopt_stale_openvpn
+from vpn.openvpn_client import (
+    VpnClient, adopt_stale_openvpn, is_active_status, is_in_flight_status,
+)
 
 logger = logging.getLogger("magic-proxy.vpn-coordinator")
 
@@ -69,12 +71,6 @@ def error_key(kind: str) -> str:
 def install_error_key(code: str) -> str:
     """安装错误码 → i18n 键（HTTP 端点映射文案用同一张表）。"""
     return _VPN_INSTALL_ERR_KEYS.get(code, "vpn.err.install_generic")
-
-
-# 行为面活跃态（菜单 toggle / HTTP 判定共用）：含 connected。
-# 显示面「进行中」（黄点）语义不同（含 exiting 不含 connected）——
-# 归 menu_builder 词表，勿混用。
-_ACTIVE_STATES = ("connecting", "connected", "reconnecting")
 
 
 class MenuVpn(NamedTuple):
@@ -186,9 +182,15 @@ class VpnCoordinator:
     # ── 读侧投影（菜单 / RuntimeProjection / HTTP 翻译用）──
 
     def is_active(self) -> bool:
-        """行为面活跃（toggle 分派用）：connecting/connected/reconnecting。"""
+        """行为面活跃（toggle 分派用）——语义档单一归宿在
+        openvpn_client.is_active_status。"""
         c = self._client
-        return c is not None and c.vpn.status in _ACTIVE_STATES
+        return c is not None and is_active_status(c.vpn.status)
+
+    def is_in_flight(self) -> bool:
+        """显示面进行中（黄点档，含 exiting 不含 connected）。"""
+        c = self._client
+        return c is not None and is_in_flight_status(c.vpn.status)
 
     def status(self) -> str:
         c = self._client
@@ -198,6 +200,20 @@ class VpnCoordinator:
         """RuntimeProjection.vpn 的单一来源（无客户端 → None）。"""
         c = self._client
         return c.snapshot() if c is not None else None
+
+    def projection(self):
+        """RuntimeProjection.vpn 增强（R7-C2）：快照 + 语义布尔
+        （active/in_flight——JS 侧状态集字面量随之消灭）+ error_key
+        （已解析 i18n 键，JS tt() 取词——error_kind 英文 token 不再
+        裸进 UI）。装饰链 wholesale 透传（mp["vpn_state"] = proj.vpn）。"""
+        snap = self.snapshot()
+        if not snap:
+            return None
+        kind = snap.get("error_kind") or ""
+        return {**snap,
+                "active": is_active_status(snap.get("status", "")),
+                "in_flight": is_in_flight_status(snap.get("status", "")),
+                "error_key": error_key(kind) if kind else ""}
 
     def configured_server(self):
         """「已配置 VPN 的服务器」单一解析：profile_set 的第一台。"""
