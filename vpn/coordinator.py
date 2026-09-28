@@ -124,13 +124,17 @@ class VpnCoordinator:
             return
         svc = server_openvpn(server)
         mgmt_pw = keychain.ensure_vpn_mgmt_password()
-        # 重装条件：sudoers 缺失，或磁盘 dns 脚本不是当前版本（脚本
-        # 0755 可读可比对；conf 0600 不可读——其重装挂脚本版本：dns/
-        # conf 组成变更即 bump SCRIPTS_VERSION，杜绝「conf 用到天荒地老」）
+        # 重装判据（R8-C1 单一归宿 privilege.assets_fresh）：sudoers
+        # 缺失，或 root 侧资产与本次参数不一致——conf 内容/mgmt.pw 经
+        # 用户侧 install stamp 摘要比对，dns 脚本版本头部比对。换服务
+        # 器/换 profile/pull_dns 翻转/密码重生成全部自动触发重装。
+        conf_text = privilege.runtime_conf(
+            profile_text, pull_dns=svc.get("pull_dns", True))
         if not privilege.check_sudoers(binary) \
-                or not dns_scripts.assets_current():
+                or not privilege.assets_fresh(conf_text, mgmt_pw):
             logger.info("vpn connect: sudoers/assets outdated, installing")
-            ok, code = self._install(profile_text, svc, mgmt_pw)
+            ok, code = privilege.install(
+                conf_text=conf_text, mgmt_password=mgmt_pw)
             if not ok:
                 logger.warning("vpn connect aborted: install failed (%s)",
                                code)
@@ -247,23 +251,18 @@ class VpnCoordinator:
             return "no_profile"
         return None
 
-    def _install(self, profile_text, svc, mgmt_pw):
-        """安装动作单一归宿（连接序列与 install_for 共用）。"""
-        return privilege.install(
-            conf_text=privilege.runtime_conf(
-                profile_text, pull_dns=svc.get("pull_dns", True)),
-            mgmt_password=mgmt_pw)
-
     def install_for(self, server):
         """安装到系统（设置窗「安装到系统」按钮；幂等）。pull_dns 读已
         保存配置——先保存再安装。返回 (ok, code)；code="no_profile" 或
-        安装错误码。"""
+        安装错误码。与连接序列同款 privilege.install 调用（安装知识
+        单一归宿，成功即写新鲜度 stamp）。"""
         text = profile_store.load_profile(server.get("id") or "")
         if not text.strip():
             return False, "no_profile"
-        ok, code = self._install(text, server_openvpn(server),
-                                 keychain.ensure_vpn_mgmt_password())
-        return ok, code
+        return privilege.install(
+            conf_text=privilege.runtime_conf(
+                text, pull_dns=server_openvpn(server).get("pull_dns", True)),
+            mgmt_password=keychain.ensure_vpn_mgmt_password())
 
     # ── 生命周期杂项 ────────────────────────────────────────
 

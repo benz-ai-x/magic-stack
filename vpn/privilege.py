@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import base64
 import getpass
+import hashlib
+import json
 import logging
 import os
 import shlex
 import shutil
 import subprocess
 
+from shared.config_store import atomic_write, get_path
 from shared.defaults import VPN_MANAGEMENT_PORT
 from vpn import dns_scripts
 
@@ -32,6 +35,58 @@ logger = logging.getLogger("magic-proxy.vpn-privilege")
 SUDOERS_PATH = "/etc/sudoers.d/magic-stack-openvpn"
 CONF_PATH = f"{dns_scripts.SYSTEM_DIR}/client.conf"
 MGMT_PW_PATH = f"{dns_scripts.SYSTEM_DIR}/mgmt.pw"
+
+# 安装新鲜度 stamp（R8-C1）：root 侧 conf（0600）/mgmt.pw（0400）用户
+# 不可读，其内容变更（换服务器/换 profile/pull_dns 翻转/钥匙串密码
+# 重生成）无法像 dns 脚本那样头部比对——此前靠人肉 bump SCRIPTS_VERSION
+# 的间接契约，换 profile 不触发重装 = spawn 旧 conf（UI 连 B、隧道去 A
+# 的真机危害）。stamp 是用户侧可读的安装回执：install 成功即写，
+# assets_fresh 比对（dns 脚本版本 + conf/pw 摘要三合一）。
+STAMP_VERSION = 1
+
+
+def _stamp_path() -> str:
+    return os.path.join(get_path("vpn_profiles_dir"), "install-stamp.json")
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _write_stamp(conf_text, mgmt_password):
+    """安装回执落盘（best-effort：失败只记日志——下次连接会因此多
+    重装一次，安全方向的失效）。"""
+    stamp = json.dumps({
+        "v": STAMP_VERSION,
+        "conf": _digest(conf_text),
+        "pw": _digest(mgmt_password),
+        "scripts": dns_scripts.SCRIPTS_VERSION,
+    })
+    try:
+        atomic_write(_stamp_path(), stamp)
+    except OSError:
+        logger.exception("vpn install stamp write failed")
+
+
+def assets_fresh(conf_text, mgmt_password) -> bool:
+    """root 侧资产是否与本次连接参数一致（重装判据单一归宿）。
+
+    - dns 脚本：0755 可读，头部版本直接比对（dns_scripts.assets_current）
+    - conf / mgmt.pw：不可读，经用户侧 stamp 摘要比对——内容或密码
+      变更、脚本版本 bump、stamp 缺失/损坏，任一不符即需重装。
+    """
+    if not dns_scripts.assets_current():
+        return False
+    try:
+        with open(_stamp_path(), encoding="utf-8") as f:
+            stamp = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return (isinstance(stamp, dict)
+            and stamp.get("v") == STAMP_VERSION
+            and stamp.get("conf") == _digest(conf_text)
+            and stamp.get("pw") == _digest(mgmt_password or "")
+            and stamp.get("scripts") == dns_scripts.SCRIPTS_VERSION)
 
 # 二进制探测链（spec §8）：env 覆盖 → Homebrew 双 prefix（ARM /opt/homebrew、
 # Intel /usr/local——注意装在 sbin，默认 PATH 探不到，已核实的坑）→
@@ -189,4 +244,5 @@ def install(*, conf_text, mgmt_password, openvpn_bin=None, user=None) -> tuple:
         return False, "osascript_failed"
     if not check_sudoers(openvpn_bin):
         return False, "sudoers_verify_failed"
+    _write_stamp(conf_text, mgmt_password)
     return True, ""

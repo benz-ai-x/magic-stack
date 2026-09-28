@@ -242,5 +242,73 @@ class TestDnsScripts(unittest.TestCase):
             self.assertFalse(dns_scripts.marker_exists())
 
 
+class TestInstallStampFreshness(unittest.TestCase):
+    """R8-C1：conf/mgmt.pw 不可读资产的新鲜度经用户侧 stamp 比对——
+    换 profile/pull_dns 翻转/密码重生成都必须触发重装。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        p = mock.patch.dict(privilege.config_store.PATHS
+                            if hasattr(privilege, "config_store")
+                            else __import__("shared.config_store",
+                                            fromlist=["PATHS"]).PATHS,
+                            {"vpn_profiles_dir": self._tmp.name})
+        p.start()
+        self.addCleanup(p.stop)
+        # dns 脚本恒新鲜（stamp 半边独立验证）
+        self._dns = mock.patch.object(privilege.dns_scripts, "assets_current",
+                                      return_value=True)
+        self._dns.start()
+        self.addCleanup(self._dns.stop)
+
+    def test_roundtrip_fresh_then_stale_on_any_change(self):
+        privilege._write_stamp("conf-A", "pw-A")
+        self.assertTrue(privilege.assets_fresh("conf-A", "pw-A"))
+        self.assertFalse(privilege.assets_fresh("conf-B", "pw-A"))   # 换 profile
+        self.assertFalse(privilege.assets_fresh("conf-A", "pw-B"))   # 换密码
+        self.assertFalse(privilege.assets_fresh("conf-A", ""))       # 密码缺席
+
+    def test_missing_or_corrupt_stamp_requires_install(self):
+        self.assertFalse(privilege.assets_fresh("conf-A", "pw-A"))
+        with open(privilege._stamp_path(), "w") as f:
+            f.write("{not json")
+        self.assertFalse(privilege.assets_fresh("conf-A", "pw-A"))
+
+    def test_scripts_version_bump_invalidates(self):
+        privilege._write_stamp("conf-A", "pw-A")
+        with mock.patch.object(privilege.dns_scripts, "SCRIPTS_VERSION",
+                               "99999"):
+            self.assertFalse(privilege.assets_fresh("conf-A", "pw-A"))
+
+    def test_stale_dns_scripts_short_circuits(self):
+        privilege._write_stamp("conf-A", "pw-A")
+        self._dns.stop()
+        stale = mock.patch.object(privilege.dns_scripts, "assets_current",
+                                  return_value=False)
+        stale.start()
+        self.addCleanup(stale.stop)
+        self.assertFalse(privilege.assets_fresh("conf-A", "pw-A"))
+
+    def test_install_success_writes_stamp(self):
+        fake = subprocess.CompletedProcess(["osascript"], 0, stderr=b"")
+        out = f"NOPASSWD: {BIN} --config {CONF_PATH} ...\n" \
+              f"NOPASSWD: /bin/sh {dns_scripts.DNS_DOWN_PATH}\n"
+
+        def runner(argv, **kw):
+            return fake if argv[0] == "osascript" else \
+                subprocess.CompletedProcess(["sudo"], 0,
+                                            stdout=out.encode())
+
+        with mock.patch.object(privilege, "resolve_openvpn_bin",
+                               return_value=BIN), \
+             mock.patch.object(privilege.subprocess, "run",
+                               side_effect=runner):
+            ok, _ = privilege.install(conf_text="conf-A",
+                                      mgmt_password="pw-A", openvpn_bin=BIN)
+        self.assertTrue(ok)
+        self.assertTrue(privilege.assets_fresh("conf-A", "pw-A"))
+
+
 if __name__ == "__main__":
     unittest.main()
