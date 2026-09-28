@@ -71,6 +71,17 @@ class UserIntents:
 
     # ── 重连 ──────────────────────────────────────────────
 
+    def reconnect_server(self, server_id=None):
+        """设置窗显式重连：按最新已保存角色选择接入或独立转发会话。
+
+        表单/旧 DOM 只传服务器 id；保存后的自动应用与转发菜单仍走
+        reconnect_proxy_or_forward，不能按代理角色把 -L 改成 -D。
+        """
+        if server_id == self._conn.proxy_server_id:
+            self.reconnect()
+        else:
+            self.reconnect_proxy_or_forward(server_id)
+
     def reconnect_proxy_or_forward(self, tunnel_id=None, *, guarded=False):
         """重连分派：tunnel_id 指定转发会话时按该会话守卫重建（多活），
         否则代理隧道整体重连。guarded=True 是保存流自动应用的守卫

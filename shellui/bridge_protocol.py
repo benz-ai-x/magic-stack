@@ -10,6 +10,8 @@ Protocol v1 (single "bridge" script-message channel, {type, payload} JSON):
   JS → PY  {type:"dirtyState",     payload:{dirty: bool}}
            {type:"pickKeyFile",    payload:{field: "sshKey"}}
            {type:"reconnectProxy", payload:{}}            — 无条件重连代理（用户显式点击）
+           {type:"reconnectProxy", payload:{tunnel_id: id}} — 显式重连服务器：
+             原生侧按最新已保存代理角色选择接入或转发会话
            {type:"reconnectProxy", payload:{if_connected: true}} — 守卫重连：仅当
              隧道当前已连接才执行（保存端口转发后的自动应用；未连接绝不拉起）
            {type:"reconnectProxy", payload:{if_connected: true, tunnel_id: id}}
@@ -125,7 +127,8 @@ class BridgeCore:
             # owns threading and the actual connection orchestration.
             # if_connected: 守卫变体——保存端口转发后的自动应用，未连接
             # 的隧道绝不因此被拉起（显式点击路径不带此旗标）。
-            # tunnel_id: 定向到该转发会话（多活）；缺省 = 代理会话。
+            # tunnel_id: 显式点击按已保存角色分派；守卫变体只定向转发。
+            # 缺省 id = 代理接入。
             action = {"type": ACTION_RECONNECT_PROXY,
                       "if_connected": bool(payload.get("if_connected"))}
             tid = payload.get("tunnel_id")

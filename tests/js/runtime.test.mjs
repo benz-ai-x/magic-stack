@@ -304,8 +304,19 @@ test("collectServers reads forward rows into the active server", () => {
   assert.equal(rt.run("dirty"), true, "新增转发行必须点亮保存按钮");
 });
 
-test("server reconnect targets saved proxy access and other servers' forwards", () => {
-  const rt = makeRuntime();
+test("server reconnect keeps stable ids through role save and runtime polling", async () => {
+  let submitted;
+  const rt = makeRuntime(async (url, opts) => {
+    if (opts?.method === "PUT") {
+      submitted = JSON.parse(opts.body);
+      return { ok: true, json: async () => ({ ok: true }) };
+    }
+    assert.equal(url, "/api/state");
+    return { ok: true, json: async () => ({ mp: { servers: [
+      { id: "t-proxy", is_proxy: false },
+      { id: "t-other", is_proxy: true },
+    ] } }) };
+  });
   rt.run(`
     S=normalizeState({mp:{proxy_server_id:'t-proxy',servers:[
       {id:'t-proxy',is_proxy:true,ssh:{host:'h'}},
@@ -314,17 +325,33 @@ test("server reconnect targets saved proxy access and other servers' forwards", 
     activeView='servers';activeTunnel=0;
     window.__sent=[];
     window.webkit={messageHandlers:{bridge:{postMessage:m=>window.__sent.push(m)}}};
+    document.querySelectorAll=()=>[];
+    document.getElementById('viewport').firstElementChild={classList:{add(){}}};
+    renderView();
   `);
-  // 只在表单中改代理角色，运行态装饰仍指向保存过的代理服务器。
-  rt.run("S.mp.proxy_server_id='t-other'");
-  for (const [index, expected] of [[0, {}], [1, { tunnel_id: "t-other" }]]) {
-    rt.run(`activeTunnel=${index}`);
-    const html = rt.run("serversHTML()");
-    const command = html.match(/onclick="(reconnectProxy\(this,'[^']*'\))"/)[1];
+  const commandInView = () => rt.elements.get("viewport").innerHTML
+    .match(/onclick="(reconnectProxy\(this,'[^']*'\))"/)[1];
+  const click = (command, id) => {
     rt.run(command.replace("this", "null"));
     assert.deepEqual(JSON.parse(rt.run("JSON.stringify(window.__sent.at(-1))")),
-      { type: "reconnectProxy", payload: expected });
-  }
+      { type: "reconnectProxy", payload: { tunnel_id: id } });
+  };
+  const oldProxyButton = commandInView();
+  click(oldProxyButton, "t-proxy");
+  rt.run("activeTunnel=1;setProxyServer()");
+  const newProxyButton = commandInView();
+  click(newProxyButton, "t-other");
+  assert.equal(rt.run("baselineState.mp.proxy_server_id"), "t-proxy");
+
+  await rt.run("saveAll(false)");
+  assert.equal(submitted.mp.proxy_server_id, "t-other");
+  assert.equal(rt.run("baselineState.mp.proxy_server_id"), "t-other");
+  click(newProxyButton, "t-other");  // 不等待装饰轮询，后端按已保存角色分派
+  await rt.run("nfsRefreshRuntime()");
+  assert.equal(rt.run("S.mp.servers[1].is_proxy"), true);
+  assert.equal(commandInView(), newProxyButton);
+  click(commandInView(), "t-other");
+  click(oldProxyButton, "t-proxy"); // 旧页面按钮也不能把转发误送为接入
 });
 
 test("collectServers reads the forward_autostart switch", () => {

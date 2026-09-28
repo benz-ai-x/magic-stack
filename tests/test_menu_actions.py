@@ -656,6 +656,30 @@ class TestLaunchProxiedRunningApp(unittest.TestCase):
 class TestBridgeActions(unittest.TestCase):
     """设置窗 bridge 动作分发（reconnectProxy / openPath captureDir）。"""
 
+    def test_server_reconnect_follows_saved_role_but_forward_save_keeps_id(self):
+        a = _make_app()
+        for saved_role, clicked, guarded, access in (
+                ("t-a", "t-b", False, False),  # B 尚未保存为代理
+                ("t-b", "t-b", False, True),   # 保存后原按钮应重连接入
+                ("t-b", "t-a", False, False),  # 旧代理 A 现在只重建转发
+                ("t-b", "t-b", True, False)):  # 转发保存恒指向 -L
+            with self.subTest(saved_role=saved_role, clicked=clicked,
+                              guarded=guarded):
+                a._conn.reset_mock()
+                a._conn.proxy_server_id = saved_role
+                a._bridge_action({"type": "reconnectProxy",
+                                  "tunnel_id": clicked,
+                                  "if_connected": guarded})
+                if access:
+                    a._conn.restart.assert_called_once_with(
+                        a._reload_config_or_alert)
+                    a._conn.restart_forward_async.assert_not_called()
+                else:
+                    a._conn.restart.assert_not_called()
+                    a._conn.restart_forward_async.assert_called_once_with(
+                        clicked, a._reload_config_or_alert, guarded=guarded,
+                        thread_name="BridgeReconnectForward")
+
     def test_reconnect_action_runs_reconnect_off_thread(self):
         a = _make_app()
         spawned = []

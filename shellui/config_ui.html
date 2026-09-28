@@ -1454,8 +1454,6 @@ function serversHTML(){
   // 变更（t.is_proxy 是服务端「实际跑着」的装饰快照，未保存窗口可不同）
   const curIdx=proxyIndexOf(S);
   const isCur=activeTunnel===curIdx;
-  // 显式按钮按已保存的代理角色重连接入；转发保存恒传 id 重建 -L。
-  const reconnectId=t.is_proxy?'':t.id||'';
   const fw=forwardsOf(t),fwOn=fw.filter(f=>f.enabled!==false).length;
   const n=nfsOf(t)||{};
   const nfsOn=n.enabled===true;
@@ -1475,7 +1473,7 @@ function serversHTML(){
           <span class="srv-id mono" title="${tt('ui.servers.id_title')}">${esc(t.id||tt('ui.servers.id_pending'))}</span></div>
           <div class="section-actions">
             ${isCur?`<span class="fw-badge" title="${tt('ui.servers.cur_proxy_title')}">✓ ${tt('ui.servers.cur_proxy')}</span>`:(t.id?`<button class="btn btn-sm" aria-label="${tt('ui.servers.make_proxy_aria',{name:esc(tname)})}" onclick="setProxyServer()">${tt('ui.servers.make_proxy')}</button>`:'')}
-            <button class="btn btn-sm" aria-label="${tt('ui.servers.reconnect_aria',{name:esc(tname)})}" onclick="reconnectProxy(this,'${esc(reconnectId)}')">${tt('common.reconnect')}</button>
+            <button class="btn btn-sm" aria-label="${tt('ui.servers.reconnect_aria',{name:esc(tname)})}" onclick="reconnectProxy(this,'${esc(t.id||'')}')">${tt('common.reconnect')}</button>
             <button class="btn btn-sm" aria-label="${tt('ui.servers.stop_proxy_aria',{name:esc(tname)})}" onclick="stopProxy(this)" title="${tt('ui.servers.stop_proxy_title')}">${tt('ui.servers.stop_proxy')}</button>
             <button class="btn btn-sm btn-danger" aria-label="${tt('ui.servers.delete_aria',{name:esc(tname)})}" onclick="cdel(this,function(){removeServer(${activeTunnel})})">${tt('ui.btn.delete')}</button>
           </div></div>
@@ -1929,7 +1927,8 @@ async function testForward(fi,btn){
   btn.disabled=false;btn.textContent=tt('ui.fw.test');
 }
 // 重连 = 菜单栏「重新连接」等价动作（Python 端停隧道→重读配置→重启），
-// 经 bridge 触发；tunnelId 定向该隧道的转发会话（多活），缺省 = 代理会话。
+// 经 bridge 传稳定 id；原生侧按最新已保存角色决定接入/转发，缺省 = 接入。
+// 不在渲染时把角色固化进按钮，保存角色后无需等轮询或重绘。
 // 浏览器直开设置页时无桥接，回退提示。
 function reconnectProxy(btn,tunnelId){
   if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.bridge){

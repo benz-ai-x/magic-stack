@@ -1082,9 +1082,11 @@ class MagicProxyApp(rumps.App):
         """
         kind = action.get("type")
         if kind == ACTION_RECONNECT_PROXY:
-            self._intents.reconnect_proxy_or_forward(
-                action.get("tunnel_id"),
-                guarded=bool(action.get("if_connected")))
+            if action.get("if_connected"):
+                self._intents.reconnect_proxy_or_forward(
+                    action.get("tunnel_id"), guarded=True)
+            else:
+                self._intents.reconnect_server(action.get("tunnel_id"))
         elif kind == ACTION_STOP_PROXY:
             self._intents.stop_proxy()
         elif kind == ACTION_FORWARD_SESSION:
