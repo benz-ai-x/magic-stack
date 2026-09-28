@@ -11,7 +11,7 @@ servers[] 形状访问器（含服务节点 None 语义）自 shared.server_shap
 """
 from shared.defaults import PORT_MAX as _PORT_MAX
 from shared.server_shape import (
-    nfs_node, openvpn_node, servers as _servers, ssh_service,
+    nfs_node, openvpn_node, servers as _servers, ssh_node, ssh_service,
 )
 
 _MP_PORTS = ("socks5_port", "http_listen_port", "capture_port", "config_port")
@@ -52,6 +52,20 @@ def server_rows_errors(mp) -> list:
         _ssh = _t.get("ssh")
         if _ssh is not None and not isinstance(_ssh, dict):
             errors.append(f"服务器 {_tname} 的 ssh 必须是对象")
+        # R8-C2 止血：JS 第一道闸原有而 Python 缺席的两条（此前 agent
+        # 直连 PUT：空地址原样落盘、port=70000 被 merge _coerce_port
+        # 静默改写 22——数据面对提交者说谎）
+        if not str(ssh_node(_t).get("host") or "").strip():
+            errors.append(f"服务器 {_tname} 的地址不能为空")
+        _port = ssh_node(_t).get("port")
+        if _port is not None and _port != "":
+            try:
+                _pv = int(_port)
+            except (TypeError, ValueError):
+                errors.append(f"服务器 {_tname} 的 SSH 端口无效")
+            else:
+                if not 1 <= _pv <= 65535:
+                    errors.append(f"服务器 {_tname} 的 SSH 端口须在 1..65535")
         _forwards = ssh_service(_t).get("forwards")
         if _forwards is None:
             pass

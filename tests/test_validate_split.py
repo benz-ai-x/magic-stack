@@ -41,11 +41,14 @@ class TestMpValidate(unittest.TestCase):
         # v2 语义（与 JS 第一道闸同口径）：非 dict nfs = 未配置不校验，
         # merge 归一回默认节点——v1 的「nfs 必须是对象」报错随换轴退役
         errs = mpv.server_rows_errors({"servers": [{"name": "s",
+                                                    "ssh": {"host": "h", "port": 22},
                                                     "services": {"nfs": ["x"]}}]})
         self.assertEqual(errs, [])
         errs2 = mpv.server_rows_errors({"servers": [{"name": "s",
                                                      "ssh": ["x"]}]})
-        self.assertEqual(errs2, ["服务器 s 的 ssh 必须是对象"])
+        # R8-C2：ssh 节非 dict 后地址规则同拍命中（ssh_node 归一为空）
+        self.assertEqual(errs2, ["服务器 s 的 ssh 必须是对象",
+                                 "服务器 s 的地址不能为空"])
 
     def test_port_conflict_across_sides(self):
         errs = mpv.port_conflict_errors(

@@ -27,9 +27,9 @@ ROOT = Path(__file__).resolve().parent.parent
 NODE = shutil.which("node")
 
 
-def _t(host="h", forwards=None, nfs=None):
+def _t(host="h", port=22, forwards=None, nfs=None):
     """v2 服务器行：连接参数在 ssh 节，转发/NFS 在 services。"""
-    row = {"ssh": {"host": host, "port": 22, "auth_type": "key"},
+    row = {"ssh": {"host": host, "port": port, "auth_type": "key"},
            "services": {}}
     if forwards is not None:
         row["services"]["ssh"] = {"forwards": forwards}
@@ -55,6 +55,11 @@ CORPUS = [
     # ── mirrored：同错同净 ──────────────────────────────
     ("clean_minimal",
      {"servers": [_t()]}, _sp(), "mirrored"),
+    # R8-C2：JS-only 漏挂止血——两条挪进 mirrored（Python 半边已补）
+    ("ssh_addr_empty",
+     {"servers": [_t(host="")]}, _sp(), "mirrored"),
+    ("ssh_port_range",
+     {"servers": [_t(port=70000)]}, _sp(), "mirrored"),
     ("socks5_port_range",
      {"socks5_port": 70000, "servers": [_t()]}, _sp(), "mirrored"),
     ("listen_port_range",
