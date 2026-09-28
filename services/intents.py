@@ -41,7 +41,8 @@ class UserIntents:
                  reload_config, spawn=None,
                  capture_ctrl=None, get_capture_dir=None, alert=None,
                  hold_copy_latch=None, get_agent_instructions=None,
-                 vpn_connect=None, vpn_disconnect=None):
+                 vpn_connect=None, vpn_disconnect=None,
+                 on_access_stopped=None):
         self._conn = conn
         self._mounts = mounts
         self._notify = notify
@@ -60,6 +61,10 @@ class UserIntents:
         # 表单一归宿），intents 只独占线程纪律与 dirty——同 capture_ctrl 模式
         self._vpn_connect_impl = vpn_connect
         self._vpn_disconnect_impl = vpn_disconnect
+        # R8-C6：桥接停接入的后置收敛（系统代理/防睡眠聚合重算）——
+        # 与菜单 stop_proxy_tunnel 同一不变式，停完即跑（此前零后置、
+        # 靠每秒 tick 治愈，tick 断过一次——#118 P0）
+        self._on_access_stopped = on_access_stopped
 
     # ── 重连 ──────────────────────────────────────────────
 
@@ -95,6 +100,11 @@ class UserIntents:
         停止即终止不做退避拉起，重启走显式「重新连接」。慢操作后台跑。"""
         def _stop():
             self._conn.stop_access()
+            if self._on_access_stopped is not None:
+                try:
+                    self._on_access_stopped()
+                except Exception:  # noqa: BLE001
+                    logger.exception("post-stop convergence failed")
         self._spawn(_stop, "StopProxy")
         self._mark_dirty()
 

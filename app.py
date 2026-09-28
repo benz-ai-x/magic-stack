@@ -254,6 +254,7 @@ class MagicProxyApp(rumps.App):
             get_agent_instructions=self._config_server.agent_instructions,
             vpn_connect=self._vpn.connect,
             vpn_disconnect=self._vpn.disconnect,
+            on_access_stopped=self._after_access_change,
         )
         # ADR-009 配置服务持有者：设置窗开着 / 复制指令会话闩锁。
         # config_api_enabled 是第三持有者（磁盘真相，经 self._config 读）。
@@ -399,14 +400,39 @@ class MagicProxyApp(rumps.App):
         VPN——接入互斥只发生在接入面。"""
         return self._conn.ssh.status in ("connecting", "connected")
 
+    def _sleep_aggregate(self):
+        """防睡眠聚合口径单一归宿（R8-C6——原手抄点用非聚合裸值：
+        挂载活跃时停 -D 会先释放 caffeinate 下一拍再夺回，≤1s 抖动）：
+        任一会话/挂载在跑就不睡（暂停是代理会话语义，转发会话仍在
+        服务时不因代理暂停而允许睡眠；挂载在途/已挂载同理——hard
+        挂载睡着 = Finder 卡死）。"""
+        mounts_active = (self._mounts.any_mounted()
+                         or self._mounts.any_session_connected())
+        status = ("connected"
+                  if (self._conn.any_connected or mounts_active)
+                  else self._conn.ssh.status)
+        paused = (self._conn.paused
+                  and not self._conn.any_forward_session_connected
+                  and not mounts_active)
+        return status, paused
+
+    def _after_access_change(self):
+        """接入层变更后的收敛后置单一归宿（R8-C6——三行咒语多处手抄
+        + 桥接路径整段缺失）：系统代理收敛（别指着死掉的 :8888）+
+        防睡眠按聚合口径重算。菜单停接入/暂停/VPN 切换与桥接停接入
+        共用；桥接侧此前零后置、全靠每秒 tick 治愈——tick 断过一次
+        （#118 P0），不变式不再寄存于 tick 存活。"""
+        status, paused = self._sleep_aggregate()
+        self._sys_proxy.sync()
+        self._lifecycle.sync_sleep(status, paused,
+                             self._config.get("prevent_sleep", False))
+
     def _switch_access_for_vpn(self):
         """VPN 接入切换的后置收敛（注入 vpn/coordinator）：只停 -D 会话
-        + 系统代理收敛（别指着死掉的 :8888）+ 防睡眠重算——转发会话与
-        NFS 挂载是服务层，原地不动（ADR-011 修订）。"""
+        + 后置收敛——转发会话与 NFS 挂载是服务层，原地不动（ADR-011
+        修订）。"""
         self._conn.stop_access()
-        self._sys_proxy.sync()
-        self._lifecycle.sync_sleep(self._conn.ssh.status, self._conn.paused,
-                             self._config.get("prevent_sleep", False))
+        self._after_access_change()
 
     def _on_vpn_established(self):
         """VPN established：路由翻转已断存量 TCP——服务层僵尸重建
@@ -503,17 +529,9 @@ class MagicProxyApp(rumps.App):
         # 会话语义，转发会话仍在服务时不因代理暂停而允许睡眠）；挂载在
         # 途/已挂载同理（hard 挂载睡着 = Finder 卡死）
         self._lifecycle.tick(self._config.get("capture_port", DEFAULT_CAPTURE_PORT))
-        mounts_active = (self._mounts.any_mounted()
-                         or self._mounts.any_session_connected())
-        # #118 接线事故（v0.15.0）：此处曾引用未定义的 s，空闲态每拍
-        # NameError → sync_sleep/_tick_relaunch 永不执行（rumps 吞异常
-        # 无感）——TestOnTickIdle 钉住
-        sleep_status = ("connected"
-                        if (self._conn.any_connected or mounts_active)
-                        else self._conn.ssh.status)
-        sleep_paused = (self._conn.paused
-                        and not self._conn.any_forward_session_connected
-                        and not mounts_active)
+        # 聚合口径与 _after_access_change 同源（R8-C6；#118 P0 的
+        # NameError 教训由 TestOnTickIdle 钉住）
+        sleep_status, sleep_paused = self._sleep_aggregate()
         self._lifecycle.sync_sleep(sleep_status, sleep_paused,
                              self._config.get("prevent_sleep", False))
 
@@ -628,9 +646,7 @@ class MagicProxyApp(rumps.App):
         修订）。停止即终止，恢复走接入行再点。后置同步面对齐
         toggle_pause（系统代理收敛与防睡眠状态重算）。"""
         self._conn.stop_access()
-        self._sys_proxy.sync()
-        self._lifecycle.sync_sleep(self._conn.ssh.status, self._conn.paused,
-                             self._config.get("prevent_sleep", False))
+        self._after_access_change()
 
     def _reload_config_or_alert(self):
         """重读磁盘配置刷新内存副本（重连 / 单会话重建共用）。
@@ -658,9 +674,7 @@ class MagicProxyApp(rumps.App):
 
     def toggle_pause(self, _):
         self._conn.toggle_pause()
-        self._sys_proxy.sync()
-        self._lifecycle.sync_sleep(self._conn.ssh.status, self._conn.paused,
-                             self._config.get("prevent_sleep", False))
+        self._after_access_change()
 
     def toggle_system_proxy(self, _):
         self._sys_proxy.toggle()
@@ -793,7 +807,10 @@ class MagicProxyApp(rumps.App):
                 lambda c: {**c,
                            "prevent_sleep": not c.get("prevent_sleep", False)}):
             return
-        self._lifecycle.sync_sleep(self._conn.ssh.status, self._conn.paused,
+        # 开关翻转后按聚合口径立即重算（R8-C6——挂载活跃时开防睡眠
+        # 即刻生效，而非等下一拍 tick）
+        status, paused = self._sleep_aggregate()
+        self._lifecycle.sync_sleep(status, paused,
                              self._config.get("prevent_sleep", False))
 
     def toggle_launch_at_login(self, _):

@@ -39,6 +39,31 @@ def _intents(**over):
     return UserIntents(**deps), conn, mounts, notes, dirties
 
 
+class TestStopProxyPostcondition(unittest.TestCase):
+    """R8-C6：桥接停接入的后置收敛——与菜单 stop_proxy_tunnel 同一
+    不变式，停完即跑（此前零后置、靠每秒 tick 治愈）。"""
+
+    def test_stop_proxy_runs_access_tail_after_stop(self):
+        tail = []
+        intents, conn, _m, _n, _d = _intents(
+            on_access_stopped=lambda: tail.append("ran"))
+        intents.stop_proxy()
+        conn.stop_access.assert_called_once()
+        self.assertEqual(tail, ["ran"])       # 同步执行器下停完即跑
+
+    def test_stop_proxy_tail_failure_does_not_break_stop(self):
+        def _boom():
+            raise RuntimeError("tail boom")
+        intents, conn, _m, _n, _d = _intents(on_access_stopped=_boom)
+        intents.stop_proxy()                  # 后置炸了也不外溢
+        conn.stop_access.assert_called_once()
+
+    def test_no_tail_injected_is_fine(self):
+        intents, conn, _m, _n, _d = _intents()
+        intents.stop_proxy()                  # 未注入（旧装配）照常停
+        conn.stop_access.assert_called_once()
+
+
 class TestReconnectDispatch(unittest.TestCase):
     """reconnect_proxy_or_forward 真值表：转发会话按 id / 代理按守卫。"""
 
