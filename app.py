@@ -185,7 +185,6 @@ class MagicProxyApp(rumps.App):
         # 降级——网络中断场景由 #85 的无限退避兜底。多活：NFS 会话同拍
         # 僵尸重建（唤醒断了所有隧道的 TCP）。
         self._reconnect_trigger = ReconnectTrigger(self._on_wake_event)
-        WakeEventSource(self._reconnect_trigger.notify).start()
 
         # Non-blocking quit→relaunch state machine for proxied app launches
         self._relaunch_waiter = None
@@ -254,6 +253,7 @@ class MagicProxyApp(rumps.App):
             get_agent_instructions=self._config_server.agent_instructions,
             vpn_connect=self._vpn.connect,
             vpn_disconnect=self._vpn.disconnect,
+            vpn_active=self._vpn.is_active,
             on_access_stopped=self._after_access_change,
         )
         # ADR-009 配置服务持有者：设置窗开着 / 复制指令会话闩锁。
@@ -289,6 +289,8 @@ class MagicProxyApp(rumps.App):
             self._conn.apply_autostarts()
         # NFS：auto_mount 的挂载项随应用启动恢复（tick 负责补会话）
         self._mounts.apply_autostarts()
+        # 接入协调器、意图面与启动接入都就绪后才接收唤醒。
+        WakeEventSource(self._reconnect_trigger.notify).start()
 
         # 退出咽喉：AppleEvent 退出不走菜单回调——统一经
         # NSApplicationWillTerminate 进 _shutdown（见 _TerminateObserver）
@@ -481,8 +483,7 @@ class MagicProxyApp(rumps.App):
                 ok=i18n.t("mode.switch_ok"))
             if not ok:
                 return
-            self._intents.vpn_disconnect()
-            self._conn.start()
+            self._intents.switch_to_ssh()
             return
         s = self._conn.ssh.status
         if s == "connecting":
@@ -496,8 +497,7 @@ class MagicProxyApp(rumps.App):
 
     def _on_wake_event(self):
         """#86 唤醒 → 代理/转发会话重连 + NFS 会话僵尸重建（同拍）。"""
-        self._conn.handle_reconnect_trigger()
-        self._mounts.reconnect_now()
+        self._intents.wake()
 
     def _on_tick(self, _):
         self._stats.tick()
@@ -706,8 +706,7 @@ class MagicProxyApp(rumps.App):
         return act
 
     def make_reconnect_tunnel(self, tunnel_id):
-        """重连指定隧道：代理隧道走整体 restart（含降级逻辑），转发会话
-        单会话重建（显式意图——会话存在即重建，Spec-A 语义）。"""
+        """重连指定服务器的转发会话，代理服务器同样独立重建 -L。"""
         def act(_):
             self._intents.reconnect_proxy_or_forward(tunnel_id)
         return act

@@ -114,6 +114,29 @@ function makeRuntime(fetchImpl) {
   };
 }
 
+test("saveAll keeps edits made while the PUT is pending dirty", async () => {
+  let release, submitted;
+  const response = new Promise(resolve => { release = resolve; });
+  const rt = makeRuntime(async (_url, opts) => {
+    submitted = JSON.parse(opts.body);
+    await response;
+    return { json: async () => ({ ok: true }) };
+  });
+  rt.run(`
+    S=normalizeState({mp:{servers:[],prevent_sleep:false}});
+    baselineState=cloneData(S);baselineRoles={};ccRoles={};activeView='system';
+    toggleSwitch(document.getElementById('cfg-sleep'));
+  `);
+  const pending = rt.run("saveAll(false)");
+  assert.equal(submitted.mp.prevent_sleep, true);
+  rt.run("toggleSwitch(document.getElementById('cfg-sleep'))");
+  release();
+  await pending;
+  assert.equal(rt.run("baselineState.mp.prevent_sleep"), true);
+  assert.equal(rt.run("S.mp.prevent_sleep"), false);
+  assert.equal(rt.run("dirty"), true);
+});
+
 test("a system switch reverted to its baseline clears dirty state", () => {
   const rt = makeRuntime();
   rt.run(`
@@ -279,6 +302,29 @@ test("collectServers reads forward rows into the active server", () => {
     ]), "行序即数组序；空白地址 trim 后缺省 127.0.0.1，空端口为 0，"
       + "无开关（缺省）行为启用");
   assert.equal(rt.run("dirty"), true, "新增转发行必须点亮保存按钮");
+});
+
+test("server reconnect targets saved proxy access and other servers' forwards", () => {
+  const rt = makeRuntime();
+  rt.run(`
+    S=normalizeState({mp:{proxy_server_id:'t-proxy',servers:[
+      {id:'t-proxy',is_proxy:true,ssh:{host:'h'}},
+      {id:'t-other',is_proxy:false,ssh:{host:'h2'}}]}});
+    baselineState=cloneData(S);baselineRoles={};ccRoles={};
+    activeView='servers';activeTunnel=0;
+    window.__sent=[];
+    window.webkit={messageHandlers:{bridge:{postMessage:m=>window.__sent.push(m)}}};
+  `);
+  // 只在表单中改代理角色，运行态装饰仍指向保存过的代理服务器。
+  rt.run("S.mp.proxy_server_id='t-other'");
+  for (const [index, expected] of [[0, {}], [1, { tunnel_id: "t-other" }]]) {
+    rt.run(`activeTunnel=${index}`);
+    const html = rt.run("serversHTML()");
+    const command = html.match(/onclick="(reconnectProxy\(this,'[^']*'\))"/)[1];
+    rt.run(command.replace("this", "null"));
+    assert.deepEqual(JSON.parse(rt.run("JSON.stringify(window.__sent.at(-1))")),
+      { type: "reconnectProxy", payload: expected });
+  }
 });
 
 test("collectServers reads the forward_autostart switch", () => {

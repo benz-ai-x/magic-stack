@@ -198,14 +198,29 @@ class TestHandleReconnectTrigger(unittest.TestCase):
 
     def test_noop_when_paused(self):
         conn = _make_coordinator()
+        conn._proxy_running = True
         conn._paused = True
         with patch.object(conn, "start_ssh") as start:
             conn.handle_reconnect_trigger()
         start.assert_not_called()
 
+    def test_stopped_access_stays_stopped_but_forwards_rebuild(self):
+        conn = _make_coordinator()
+        conn._proxy_running = True
+        session = MagicMock()
+        conn._forward_sessions["t-forward"] = session
+        with patch.object(conn._ssh, "stop"), \
+             patch.object(conn._proxy_runtime, "stop"), \
+             patch.object(conn, "start_ssh") as start:
+            conn.stop_access()
+            conn.handle_reconnect_trigger()
+        start.assert_not_called()
+        session.reconnect_now.assert_called_once()
+
     def test_connected_rebuilds_tunnel(self):
         """唤醒后 TCP 多为僵尸链路——connected 也要主动重建，不等判死。"""
         conn = _make_coordinator()
+        conn._proxy_running = True
         conn._ssh._status = "connected"
         with patch.object(conn._ssh, "stop") as stop, \
              patch.object(conn, "start_ssh") as start:
@@ -215,6 +230,7 @@ class TestHandleReconnectTrigger(unittest.TestCase):
 
     def test_stopped_starts_without_stop(self):
         conn = _make_coordinator()
+        conn._proxy_running = True  # 接入仍运行，仅 SSH 子进程退出
         conn._ssh._status = "stopped"
         with patch.object(conn._ssh, "stop") as stop, \
              patch.object(conn, "start_ssh") as start:
@@ -224,6 +240,7 @@ class TestHandleReconnectTrigger(unittest.TestCase):
 
     def test_error_starts_without_stop(self):
         conn = _make_coordinator()
+        conn._proxy_running = True
         conn._ssh._status = "error"
         with patch.object(conn._ssh, "stop") as stop, \
              patch.object(conn, "start_ssh") as start:
@@ -234,6 +251,7 @@ class TestHandleReconnectTrigger(unittest.TestCase):
     def test_connecting_leaves_existing_flow(self):
         """已有连接在途——让现有流程收敛，不杀重连。"""
         conn = _make_coordinator()
+        conn._proxy_running = True
         conn._ssh._status = "connecting"
         with patch.object(conn._ssh, "stop") as stop, \
              patch.object(conn, "start_ssh") as start:

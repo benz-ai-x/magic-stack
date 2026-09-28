@@ -282,10 +282,10 @@ class TestPutSpSaveAndCallback(unittest.TestCase):
 
     def test_prepare_failure_appends_error(self):
         """issue #6：prepare 校验失败 → 422。"""
-        from mpconf.config_state import CommitPlan
+        from mpconf.config_state import SaveResult
         with patch.object(config_server, "ConfigStateStore") as store_cls:
-            store_cls.return_value.prepare.return_value = CommitPlan(
-                False, ["invalid config"])
+            store_cls.return_value.save.return_value = SaveResult(
+                False, "validate", ["invalid config"])
             status, data = _request(
                 self.port, "PUT", "/api/state", token=self.token,
                 body=json.dumps({"sp": {"providers": {}}}))
@@ -294,14 +294,14 @@ class TestPutSpSaveAndCallback(unittest.TestCase):
 
     def test_on_sp_saved_callback_invoked_on_success(self):
         """issue #6：on_sp_saved 只在完整提交后触发（作为 on_committed）。"""
-        from mpconf.config_state import CommitPlan, SaveResult
+        from mpconf.config_state import SaveResult
         callback = MagicMock()
         with patch.object(config_server, "ConfigStateStore") as store_cls:
-            store_cls.return_value.prepare.return_value = CommitPlan(
-                True, [], None, {"providers": {}})
-            store_cls.return_value.commit.side_effect = \
-                lambda plan, on_committed=None: (on_committed and on_committed()
-                                                 or SaveResult(True, None, []))
+            def save(*, mp=None, sp=None, on_committed=None):
+                if on_committed is not None:
+                    on_committed()
+                return SaveResult(True, None, [])
+            store_cls.return_value.save.side_effect = save
             self.server._server.on_sp_saved = callback
             try:
                 _request(
@@ -472,4 +472,3 @@ class TestProviderTemplatesEndpoint(unittest.TestCase):
             self.assertTrue(glm["anthropic_native"])
         finally:
             self.server.stop()
-

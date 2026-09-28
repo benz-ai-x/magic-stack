@@ -316,13 +316,13 @@ class ConnectionCoordinator:
     def handle_reconnect_trigger(self):
         """#86：唤醒等外部事件 → 立即重连（跳过退避）。
 
-        只做提前触发，不改状态机语义：connected 视为僵尸链路主动重建
+        已停止接入不得因唤醒复活；运行中的 connected 视为僵尸链路主动重建
         （不等 ServerAlive 判死）；connecting 让现有流程收敛；其余直接
         走 start_ssh（内部 cancel 重试计数 + host-key 检查）。
         多活：唤醒断了所有隧道的 TCP——转发会话同样僵尸重建。
         """
         with self._lifecycle_lock:
-            if not self._paused:
+            if self._proxy_running and not self._paused:
                 status = self._ssh.status
                 if status != "connecting":
                     if status == "connected":

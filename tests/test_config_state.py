@@ -593,6 +593,94 @@ class TestFaultInjectionCompletions(unittest.TestCase):
 
 
 
+class TestConcurrentTransactions(unittest.TestCase):
+    def test_save_callback_can_wait_for_another_reader(self):
+        """回调允许网关线程读取配置；事务锁不得延伸到回调。"""
+        import threading
+        with tempfile.TemporaryDirectory() as d:
+            paths = dict(mp_path=str(Path(d) / "m.json"),
+                         sp_path=str(Path(d) / "s.yaml"))
+            reads, blocked = [], []
+            reader = threading.Thread(
+                target=lambda: reads.append(ConfigStateStore(**paths).load()))
+
+            def on_committed():
+                reader.start()
+                reader.join(1)
+                blocked.append(reader.is_alive())
+
+            result = ConfigStateStore(**paths).save(
+                mp={"servers": [], "language": "en"}, on_committed=on_committed)
+            reader.join(2)
+            self.assertTrue(result.ok)
+            self.assertEqual(blocked, [False])
+            self.assertEqual(reads[0].mp_data["language"], "en")
+
+    def test_http_commit_and_menu_update_keep_both_changes(self):
+        import threading
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        from services.config_server import _Handler
+        from shared import config_store
+
+        with tempfile.TemporaryDirectory() as d:
+            paths = {key: str(Path(d) / key) for key in config_store.PATHS}
+            with patch.dict(config_store.PATHS, paths):
+                store = ConfigStateStore()
+                self.assertTrue(store.commit(store.prepare(mp={"servers": []})).ok)
+                original_install = ConfigStateStore._atomic_install
+                installing, release, updating = (threading.Event() for _ in range(3))
+                results, errors = {}, []
+
+                def install(current, path, text):
+                    if threading.current_thread().name == "HTTP-save":
+                        installing.set()
+                        if not release.wait(2):
+                            raise OSError("test barrier timed out")
+                    return original_install(current, path, text)
+
+                def http_save():
+                    try:
+                        handler = SimpleNamespace(
+                            server=SimpleNamespace(on_mp_saved=None, on_sp_saved=None),
+                            _json=lambda code, body: results.update(http=body.get("ok")))
+                        _Handler._api_put_state(handler, {
+                            "mp": {"servers": [], "language": "en"}})
+                    except Exception as exc:
+                        errors.append(exc)
+
+                def menu_update():
+                    try:
+                        updating.set()
+                        results["menu"] = ConfigStateStore().update_mp(
+                            lambda c: {**c, "prevent_sleep": True}).ok
+                    except Exception as exc:
+                        errors.append(exc)
+
+                with patch.object(ConfigStateStore, "_atomic_install", install):
+                    http = threading.Thread(target=http_save, name="HTTP-save")
+                    menu = threading.Thread(target=menu_update, name="Menu-update")
+                    http.start()
+                    try:
+                        self.assertTrue(installing.wait(1))
+                        menu.start()
+                        self.assertTrue(updating.wait(1))
+                        menu.join(0.05)  # writes must wait for the whole transaction
+                        self.assertTrue(menu.is_alive())
+                    finally:
+                        release.set()
+                        http.join(2)
+                        if menu.ident is not None:
+                            menu.join(2)
+                self.assertFalse(http.is_alive())
+                self.assertFalse(menu.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(results, {"http": True, "menu": True})
+                saved = json.loads(Path(paths["mp"]).read_text())
+                self.assertEqual(saved["language"], "en")
+                self.assertTrue(saved["prevent_sleep"])
+
+
 class TestUpdateMp(unittest.TestCase):
     """#46 T1a/d：菜单开关的唯一写径——写前读新 + 事务写。
 

@@ -624,13 +624,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True})
             return
         store = ConfigStateStore(keychain=keychain)
-        plan = store.prepare(mp=mp_in, sp=sp_in)
-        if not plan.ok:
-            self._json(422, {"ok": False, "errors": plan.errors})
-            return
         # 提交完整成功后按「本事务涉及的段」触发回调：MP 段 → 刷新应用
         # 内存副本（app 侧 converge launch_at_login 等），SP 段 → 网关
-        # reload。commit 的 on_committed 是单钩子，这里按段组合。
+        # reload。save 的 on_committed 是单钩子，这里按段组合。
         committed_callbacks = []
         if mp_in is not None and getattr(self.server, "on_mp_saved", None):
             committed_callbacks.append(self.server.on_mp_saved)
@@ -642,7 +638,7 @@ class _Handler(BaseHTTPRequestHandler):
                 cb()
 
         on_committed = _fire_committed if committed_callbacks else None
-        result = store.commit(plan, on_committed=on_committed)
+        result = store.save(mp=mp_in, sp=sp_in, on_committed=on_committed)
         if not result.ok:
             self._json(422, {"ok": False, "errors": result.errors})
         else:

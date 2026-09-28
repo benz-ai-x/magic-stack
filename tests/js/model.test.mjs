@@ -884,6 +884,55 @@ function flowSnap(mutate) {
   return { S, baselineState: base, ccRoles: {}, baselineRoles: {} };
 }
 
+test("saveFlow rebuilds forwards by id even when the proxy role changes", async () => {
+  const snap = flowSnap((S, base) => {
+    for (const st of [S, base]) {
+      st.mp.servers[0].id = "t-1";
+      st.mp.servers.push({ id: "t-other", name: "t2", ssh: { host: "h2" },
+        services: { ssh: { forwards: [] } } });
+      st.mp.servers[0].forward_running = true;
+      st.mp.servers[0].services.ssh.forwards = [
+        { local_port: 10001, remote_host: "127.0.0.1", remote_port: 80 },
+      ];
+      st.mp.proxy_server_id = "t-1";
+    }
+    S.mp.servers[0].services.ssh.forwards[0].remote_port = 81;
+  });
+  const { deps } = flowDeps({ fetch: fetchStub({ "/api/state:PUT": { ok: true } }) });
+  const targets = [];
+  deps.reconnectForwards = id => targets.push(id);
+  await L.saveFlow(snap, deps, false);
+  assert.deepEqual(targets, ["t-1"]);
+  targets.length = 0;
+  snap.S.mp.proxy_server_id = "t-other";
+  await L.saveFlow(snap, deps, false);
+  assert.deepEqual(targets, ["t-1"], "proxy role does not own -L sessions");
+});
+
+test("saveFlow uses the same role snapshot for preview, setup and baseline", async () => {
+  const snap = flowSnap();
+  snap.ccRoles = { opus: { model: "provider/old" } };
+  const expected = structuredClone(snap.ccRoles);
+  let release, setup;
+  const confirmation = new Promise(resolve => { release = resolve; });
+  const { deps, calls } = flowDeps({
+    fetch: fetchStub({
+      "/api/state:PUT": { ok: true },
+      "/api/cc-sync-preview:POST": { ok: true, already: false },
+      "/api/setup-claude-code:POST": body => { setup = body.roles; return { ok: true }; },
+    }),
+    confirmSync: async () => {
+      snap.ccRoles.opus.model = "provider/new";
+      release(true);
+      return confirmation;
+    },
+  });
+  await L.saveFlow(snap, deps, true);
+  assert.deepEqual(setup, expected);
+  assert.deepEqual(calls.commitRoles, expected);
+  assert.notDeepEqual(calls.commitRoles, snap.ccRoles);
+});
+
 test("saveFlow: clean snapshot with no force is a no-op", async () => {
   const { deps, calls } = flowDeps();
   const out = await L.saveFlow(flowSnap(), deps, false);

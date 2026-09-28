@@ -304,25 +304,23 @@ class TestPutState(unittest.TestCase):
         self.assertEqual(status, 400)
 
     def test_put_goes_through_config_state_store(self):
-        """issue #6：PUT 经 ConfigStateStore 事务边界（prepare→commit）。"""
-        from mpconf.config_state import CommitPlan, SaveResult
-        plan = CommitPlan(True, [], {"servers": []}, {"providers": {}})
+        """PUT 经 save 把 prepare→commit 纳入同一事务边界。"""
+        from mpconf.config_state import SaveResult
         with patch("services.config_server.ConfigStateStore") as store_cls:
-            store_cls.return_value.prepare.return_value = plan
-            store_cls.return_value.commit.return_value = SaveResult(True, None, [])
+            store_cls.return_value.save.return_value = SaveResult(True, None, [])
             body = json.dumps({"mp": {"servers": []}, "sp": {"providers": {}}})
             status, data = _request(self.port, "PUT",
                                     "/api/state", token=self.token,
                                     body=body)
         self.assertEqual(status, 200)
-        store_cls.return_value.prepare.assert_called_once()
-        store_cls.return_value.commit.assert_called_once()
+        store_cls.return_value.save.assert_called_once_with(
+            mp={"servers": []}, sp={"providers": {}}, on_committed=None)
 
     def test_put_with_validation_errors_returns_422(self):
-        from mpconf.config_state import CommitPlan
+        from mpconf.config_state import SaveResult
         with patch("services.config_server.ConfigStateStore") as store_cls:
-            store_cls.return_value.prepare.return_value = CommitPlan(
-                False, ["端口无效"])
+            store_cls.return_value.save.return_value = SaveResult(
+                False, "validate", ["端口无效"])
             body = json.dumps({"mp": {}})
             status, data = _request(self.port, "PUT",
                                     "/api/state", token=self.token,
@@ -1139,21 +1137,18 @@ class TestPutSectionCallbacks(unittest.TestCase):
         self.server.stop()
 
     def _put(self, body_obj, commit_ok=True):
-        from mpconf.config_state import CommitPlan, SaveResult
-        plan = (CommitPlan(True, [], body_obj.get("mp"), body_obj.get("sp"))
-                if commit_ok else CommitPlan(False, ["bad"]))
+        from mpconf.config_state import SaveResult
         result = (SaveResult(True, None, []) if commit_ok
                   else SaveResult(False, "mp", ["bad"]))
 
-        def _commit(_plan, on_committed=None):
-            # 真实 commit 的语义替身：成功才触发 on_committed
+        def _save(*, mp=None, sp=None, on_committed=None):
+            # 真实 save 的语义替身：成功才触发 on_committed
             if commit_ok and on_committed is not None:
                 on_committed()
             return result
 
         with patch("services.config_server.ConfigStateStore") as store_cls:
-            store_cls.return_value.prepare.return_value = plan
-            store_cls.return_value.commit.side_effect = _commit
+            store_cls.return_value.save.side_effect = _save
             return _request(self.port, "PUT", "/api/state",
                             token=self.token, body=json.dumps(body_obj))
 

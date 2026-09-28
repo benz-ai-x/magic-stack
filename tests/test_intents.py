@@ -75,10 +75,13 @@ class TestReconnectDispatch(unittest.TestCase):
             thread_name="BridgeReconnectForward")
         self.assertEqual(dirties, [1])
 
-    def test_proxy_tunnel_id_falls_back_to_proxy_restart(self):
+    def test_proxy_server_id_still_targets_its_forward_session(self):
         ui, conn, _, _, _ = _intents()
         ui.reconnect_proxy_or_forward("t-proxy")
-        conn.restart.assert_called_once()
+        conn.restart.assert_not_called()
+        conn.restart_forward_async.assert_called_once_with(
+            "t-proxy", ui._reload_config, guarded=False,
+            thread_name="BridgeReconnectForward")
 
     def test_guarded_proxy_skip_when_not_connected(self):
         """保存流守卫：未连接的代理绝不因保存配置被拉起。"""
@@ -113,6 +116,68 @@ class TestReconnectDispatch(unittest.TestCase):
         # start() 被 stub —— 核心未真跑（接线断言，不起真线程）
         reload_mock.assert_not_called()
         thread.return_value.start.assert_called_once()
+
+
+class TestAccessSwitching(unittest.TestCase):
+    def test_vpn_blocks_ssh_reconnect_and_wake_only_rebuilds_services(self):
+        ui, conn, mounts, _, _ = _intents(vpn_active=lambda: True)
+        ui.reconnect()
+        ui.wake()
+        conn.restart.assert_not_called()
+        conn.handle_reconnect_trigger.assert_not_called()
+        conn.reconnect_forwards_now.assert_called_once()
+        mounts.reconnect_now.assert_called_once()
+
+    def test_ssh_wake_keeps_access_and_service_recovery(self):
+        ui, conn, mounts, _, _ = _intents(vpn_active=lambda: False)
+        ui.wake()
+        conn.handle_reconnect_trigger.assert_called_once()
+        mounts.reconnect_now.assert_called_once()
+
+    def test_failed_vpn_stop_never_starts_ssh(self):
+        disconnect = MagicMock()
+        ui, conn, _, _, _ = _intents(
+            vpn_disconnect=disconnect, vpn_active=lambda: True)
+        ui.switch_to_ssh()
+        disconnect.assert_called_once()
+        conn.start.assert_not_called()
+
+    def test_wake_waits_for_vpn_connect_and_checks_final_access(self):
+        connecting, release, waking, woke = (threading.Event() for _ in range(4))
+        workers, active = [], []
+
+        def connect(server):
+            connecting.set()
+            if not release.wait(2):
+                raise TimeoutError("test barrier timed out")
+            active.append(True)
+
+        def spawn(target, name):
+            def run():
+                if name == "WakeReconnect":
+                    waking.set()
+                target()
+            worker = threading.Thread(target=run, name=name)
+            workers.append(worker)
+            worker.start()
+
+        ui, conn, mounts, _, _ = _intents(
+            spawn=spawn, vpn_connect=connect, vpn_active=lambda: bool(active))
+        mounts.reconnect_now.side_effect = woke.set
+        try:
+            ui.vpn_connect({})
+            self.assertTrue(connecting.wait(1))
+            ui.wake()
+            self.assertTrue(waking.wait(1))
+            self.assertFalse(woke.wait(0.05))
+        finally:
+            release.set()
+            for worker in workers:
+                worker.join(2)
+        self.assertTrue(woke.is_set())
+        self.assertTrue(all(not w.is_alive() for w in workers))
+        conn.handle_reconnect_trigger.assert_not_called()
+        conn.reconnect_forwards_now.assert_called_once()
 
 
 class TestForwardSession(unittest.TestCase):
