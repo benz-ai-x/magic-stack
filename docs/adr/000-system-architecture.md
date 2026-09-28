@@ -5,11 +5,11 @@
 - 决策者：tech-lead
 - 影响范围：项目全栈（已上线 v0.1.2 的 brownfield macOS 应用）
 
-> **更新注记（2026-08-13）：** 本 ADR 记录的是 v0.1.2 → v0.4.0 时期的架构决策。后续变更见 ADR-001（TLS MITM 抓包）、ADR-002（配置表示收敛与 API key 布尔契约）、ADR-003（Claude Code 环境变量契约）。当前版本、模块清单、菜单结构等易过期信息以 `CLAUDE.md` 为权威源——本文不再同步版本号和行数。已删特性：tiktoken 依赖、long_context/background/think 路由场景（见 CONTEXT.md L87）。`proxy_runtime.py` 已不存在（`ProxyRuntime` 在 `proxy.py`）。
+> **更新注记（2026-08-13）：** 本 ADR 记录的是 v0.1.2 → v0.4.0 时期的架构决策。后续变更见 ADR-001（TLS MITM 抓包）、ADR-002（配置表示收敛与 API key 布尔契约）、ADR-003（Claude Code 环境变量契约）。当前版本以 `build.sh` 为准，模块归属见[模块地图](../agents/architecture.md)，菜单与设置导航见[界面约定](../agents/ui.md)；易过期信息以代码为准，本文不再同步版本号和行数。已删特性：tiktoken 依赖、long_context/background/think 路由场景（见 CONTEXT.md L87）。`proxy_runtime.py` 已不存在（`ProxyRuntime` 在 `proxy.py`）。
 
 ## 上下文
 
-Magic Proxy 是一个**已存在**的 macOS 菜单栏应用：通过 SSH 隧道把远端 SOCKS5 代理暴露成本地 HTTP 代理，带实时流量统计。纯 Python 3 实现，可打包为原生 `.app` 并经 Developer ID 签名 + Apple 公证分发。本 ADR 首版基线为 v0.1.2；当前版本见 `build.sh`（易过期信息以 `CLAUDE.md` 为权威源）——v0.4.0 引入 Suanpan AI 路由网关 + Webview 配置界面 + 架构重构（详见 §v0.4.0 更新）；TLS MITM 抓包 feature 决策见 ADR-001。
+Magic Proxy 是一个**已存在**的 macOS 菜单栏应用：通过 SSH 隧道把远端 SOCKS5 代理暴露成本地 HTTP 代理，带实时流量统计。纯 Python 3 实现，可打包为原生 `.app` 并经 Developer ID 签名 + Apple 公证分发。本 ADR 首版基线为 v0.1.2；当前版本见 `build.sh`（易过期信息以代码为准）——v0.4.0 引入 Suanpan AI 路由网关 + Webview 配置界面 + 架构重构（详见 §v0.4.0 更新）；TLS MITM 抓包 feature 决策见 ADR-001。
 
 AppGenesisForge（AGF）团队模板刚装入本项目，其 ADR-000 模板默认技术栈（React + FastAPI + Postgres）与 Magic Proxy 完全不符。本 ADR 是按**实际代码**（`grep` import + 通读各模块）回填的真实架构基线，替换模板示例。目的是让后续任何 feature / 技术选型有一个与代码一致的起点，并显式记录存量栈里**已知的风险**（见「备选方案 / 影响」段的 rumps 维护状态）。
 
@@ -42,7 +42,7 @@ AppGenesisForge（AGF）团队模板刚装入本项目，其 ADR-000 模板默�
 
 **v0.3.0 更新 — TLS MITM 抓包 feature**（决策见 [ADR-001](001-mitm-packet-capture.md)，本节仅同步基线、不重述决策）：新增「抓包模式」经 mitmproxy 级联解密 HTTPS、抽 6 家 AI（OpenAI/Anthropic/DeepSeek/豆包/Qwen/MiniMax）请求·响应落 JSONL（`~/.magic-proxy-captures/<date>.jsonl`）；数据流 `浏览器 → mitmdump:8080（MITM 看明文）→ proxy.py:8888（upstream HTTP，零改动）→ SSH SOCKS5:1080 → 真实服务器`。新依赖 **mitmproxy 12.2.3**（`mitmdump` 子进程；PyInstaller 自带 hooks 打包，Task 1 spike 通过）。**打包工具链下界从 3.9 抬到 3.12**（mitmproxy ≥11.1.0 的 PyPI `requires-python>=3.12`；构建解释器约束、非用户系统约束——**自有代码下界仍 ≥3.9**）。新增 4 模块见「项目目录」的 `[v0.3.0/ADR-001]` 标注项。
 
-**v0.4.0 更新 — Suanpan AI 路由网关 + Webview 配置 + 架构重构**：① 新增 Suanpan 网关（`suanpan/` 子包，FastAPI + uvicorn，:9527）将多家 LLM 后端统一为 Anthropic Messages API，按 内联覆盖 → `SUBAGENT-MODEL` 标签 → 模型规则 → 默认 链路路由；② 以 WKWebView + Web 配置服务（`config_server.py` :9528 + `config_ui.html` + `webview_window.py`）取代原生 `prefs.py` 配置窗（`prefs.py` 已删）；③ `app.py` 瘦身为纯编排器，拆出 `config.py` / `menu_builder.py` / `sys_proxy_controller.py` / `retry_scheduler.py` / `host_key_flow.py` / `subprocess_monitor.py`（`SSHMonitor`/`CaptureMonitor` 共同基类）/ `capture_store.py` 等模块；④ 新增 `sleep_blocker.py`（防睡眠）+ `login_item.py`（开机自启）。Suanpan 依赖为 `>=` 下界（非 `==` pin）。当前架构以 `CLAUDE.md` 为权威源。
+**v0.4.0 更新 — Suanpan AI 路由网关 + Webview 配置 + 架构重构**：① 新增 Suanpan 网关（`suanpan/` 子包，FastAPI + uvicorn，:9527）将多家 LLM 后端统一为 Anthropic Messages API，按 内联覆盖 → `SUBAGENT-MODEL` 标签 → 模型规则 → 默认 链路路由；② 以 WKWebView + Web 配置服务（`config_server.py` :9528 + `config_ui.html` + `webview_window.py`）取代原生 `prefs.py` 配置窗（`prefs.py` 已删）；③ `app.py` 瘦身为纯编排器，拆出 `config.py` / `menu_builder.py` / `sys_proxy_controller.py` / `retry_scheduler.py` / `host_key_flow.py` / `subprocess_monitor.py`（`SSHMonitor`/`CaptureMonitor` 共同基类）/ `capture_store.py` 等模块；④ 新增 `sleep_blocker.py`（防睡眠）+ `login_item.py`（开机自启）。Suanpan 依赖为 `>=` 下界（非 `==` pin）。当前模块归属见[模块地图](../agents/architecture.md)，实现以代码为准。
 
 ## 备选方案
 
@@ -96,7 +96,7 @@ config_server.py        # [v0.4.0] Web 配置服务 :9528（JSON CRUD + bearer t
 config_ui.html          # [v0.4.0] 自包含 Web 配置面板（侧边栏导航）
 webview_window.py       # [v0.4.0] WKWebView 窗口
 suanpan_runtime.py      # [v0.4.0] Suanpan 网关线程化运行时（延迟导入）
-suanpan/                # [v0.4.0] AI 路由网关子包（FastAPI :9527，详见 CLAUDE.md）
+suanpan/                # [v0.4.0] AI 路由网关子包（FastAPI :9527，详见 docs/agents/architecture.md）
 capture.py              # [v0.3.0/ADR-001] mitmdump 子进程管理（抓包模式）
 capture_store.py        # [v0.4.0] 抓包目录/文件管理（跨进程共享）
 ai_capture_addon.py     # [v0.3.0/ADR-001] mitmproxy addon：6 家 AI 请求·响应抽取落 JSONL

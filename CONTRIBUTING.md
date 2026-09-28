@@ -30,8 +30,8 @@ Both suites must pass before a PR can merge. Coverage omits are declared in `.co
 
 ## Conventions
 
-- **One module, one home** — every domain has a single owning module (see the module map in [`CLAUDE.md`](CLAUDE.md)). New behavior goes into the owning module or a new one; don't fork logic across sites.
-- **Docs are guarded** — `tests/test_docs_drift.py` pins the module inventory in `CLAUDE.md`. Moving/adding modules means updating that contract.
+- **One module, one home** — every responsibility has a single owning module (see the [module map](docs/agents/architecture.md)). New behavior goes into the owning module or a new one; don't fork logic across sites.
+- **Docs are guarded** — `tests/test_docs_drift.py` pins the [module inventory](docs/agents/architecture.md) and [settings navigation](docs/agents/ui.md). Moving/adding modules or settings views means updating the corresponding reference.
 - **Domain vocabulary** — terms like tunnel, capture mode, per-request origin binding, and routing priority are defined in [`CONTEXT.md`](CONTEXT.md). Use them consistently.
 - **Commits** — Conventional Commits with a scope and a Chinese summary, e.g. `fix(tunnel): relay 写端断开后停止转发`. Releases are tagged `vX.Y.Z` (version lives in `build.sh`).
 - **ADRs** — decisions with lasting consequences get an ADR under `docs/adr/`.

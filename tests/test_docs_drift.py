@@ -16,6 +16,8 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 ADR_000 = ROOT / "docs" / "adr" / "000-system-architecture.md"
 CLAUDE_MD = ROOT / "CLAUDE.md"
+MODULE_MAP_MD = ROOT / "docs" / "agents" / "architecture.md"
+UI_MD = ROOT / "docs" / "agents" / "ui.md"
 ADR_024 = ROOT / "docs" / "adr" / "003-claude-code-env-contract.md"
 ADR_025 = ROOT / "docs" / "adr" / "004-prompt-caching-and-prefix-stability.md"
 
@@ -129,23 +131,29 @@ class TestPromptCachingAdrDocumented:
         assert "缓存" in text
 
 
-class TestClaudeMdDeclaresCodeAsTruth:
-    """#41 建议 3: CLAUDE.md must state that code wins over doc claims."""
+class TestAgentEntryPoint:
+    """CLAUDE.md declares code as truth and links the guarded references."""
 
     def test_disclaimer_present(self):
         text = CLAUDE_MD.read_text(encoding="utf-8")
         assert "以代码为准" in text, \
             "CLAUDE.md lacks the '以代码为准' disclaimer for volatile info"
 
+    def test_guarded_references_are_reachable(self):
+        text = CLAUDE_MD.read_text(encoding="utf-8")
+        for path in (MODULE_MAP_MD, UI_MD):
+            relative = path.relative_to(ROOT).as_posix()
+            assert path.is_file(), f"missing reference: {relative}"
+            assert f"]({relative})" in text, \
+                f"CLAUDE.md must link to {relative}"
 
-class TestClaudeMdCoversAllModules:
-    """Every repo module appears in CLAUDE.md's per-domain module inventory.
 
-    R9-C1：守卫此前只钉 root + suanpan——其余九域 ~80 行模块描述删行
-    不红，CLAUDE.md「逐模块清单是防漂移守卫钉住的契约面」宣称虚标。
-    现按域分节钉全量：每域必须有 `<pkg>/ ──` 段，段内 `<name>.py ──`
-    行覆盖该域全部模块（同名 basename 跨域存在——config.py/proxy.py/
-    coordinator.py——按节匹配才真正防漂移）。
+class TestModuleMapCoversAllModules:
+    """Every repo module appears in the disclosed per-domain module map.
+
+    每域必须有 `<pkg>/ ──` 段，段内 `<name>.py ──` 行覆盖该域全部
+    模块；按节匹配避免跨域同名文件（config.py/proxy.py/coordinator.py）
+    掩盖缺失条目。迁出 CLAUDE.md 不改变守卫范围。
     """
 
     # 与 test_arch_imports._PACKAGES 同集（docker 入装配层段）
@@ -172,42 +180,42 @@ class TestClaudeMdCoversAllModules:
         return "\n".join(section)
 
     def test_every_module_mentioned(self):
-        claude = CLAUDE_MD.read_text(encoding="utf-8")
-        lines = claude.splitlines()
+        module_map = MODULE_MAP_MD.read_text(encoding="utf-8")
+        lines = module_map.splitlines()
         covered_pkgs = set(self._PACKAGES)
         root_section = "\n".join(lines)
         for pkg in self._PACKAGES:
             section = self._section(lines, pkg)
             assert section is not None, (
-                f"CLAUDE.md 缺「{pkg}/ ──」模块清单段（防漂移守卫按域钉"
+                f"模块地图缺「{pkg}/ ──」模块清单段（防漂移守卫按域钉"
                 f"全量——新增域须同步文档）")
             modules = {p.name for p in (ROOT / pkg).glob("*.py")} - _SKIP
             for name in sorted(modules):
                 assert name in section, (
-                    f"{pkg}/{name} not mentioned in its CLAUDE.md section")
+                    f"{pkg}/{name} not mentioned in its module-map section")
             covered_pkgs.discard(pkg)
         # 根目录模块（app.py/util.py）在任何段之外提及即可
         root_modules = {p.name for p in ROOT.glob("*.py")} - _SKIP
         for name in sorted(root_modules):
             assert name in root_section, (
-                f"{name} not mentioned in CLAUDE.md root module list")
+                f"{name} not mentioned in module-map root module list")
 
 
 class TestSettingsNavigationDocumented:
     """The volatile AI routing sidebar list must come from the UI registry."""
 
-    def test_claude_md_ai_router_views_match_registry(self):
+    def test_ui_doc_ai_router_views_match_registry(self):
         html = (ROOT / "shellui" / "config_ui.html").read_text(encoding="utf-8")
         titles = re.findall(
             r"\w+:\{group:'AI 路由',title:'([^']+)'", html)
         assert titles, "no AI routing views found in config_ui VIEWS registry"
-        claude_line = next(
-            line for line in CLAUDE_MD.read_text(encoding="utf-8").splitlines()
+        navigation_line = next(
+            line for line in UI_MD.read_text(encoding="utf-8").splitlines()
             if line.startswith("**偏好设置：**")
         )
         expected = "AI 路由（" + " / ".join(titles) + "）"
-        assert expected in claude_line, \
-            f"CLAUDE.md settings navigation drifted; expected {expected!r}"
+        assert expected in navigation_line, \
+            f"UI documentation settings navigation drifted; expected {expected!r}"
 
 
 if __name__ == "__main__":
