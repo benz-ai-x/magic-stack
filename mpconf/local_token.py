@@ -1,17 +1,27 @@
 """本地客户端 token（issue #9，决策 A×4）：每安装实例专用随机 token.
 
-随机生成一次、存 `~/.magic-proxy.json` 的 `local_client_token` 字段
-（经 config_store.atomic_write：0600 + 原子替换）；单活轮换——任意时刻
-一个有效值。Claude Code 同步写入该 token；网关只用它做本地客户端认证，
-并在任何 Provider 出站前无条件剥除。明文永不回显于 UI/日志/diff（掩码
-布尔契约）。
+随机生成一次、存 `~/.magic-proxy.json` 的 `local_client_token` 字段；
+单活轮换——任意时刻一个有效值。Claude Code 同步写入该 token；网关只用
+它做本地客户端认证，并在任何 Provider 出站前无条件剥除。明文永不回显
+于 UI/日志/diff（掩码布尔契约）。
+
+R8-C3：写径收进 ConfigStateStore.update_mp（「唯一事务边界」承诺兑现）
+——此前自持 read-modify-write 有三重隐患：① 损坏主文件被折叠 {} 后整
+文件覆写成单键（配置蒸发；Docker 路径无 .bak 前备即全损）；② journal
+崩溃重放用提交前候选覆盖 token 写入（已分发的 ANTHROPIC_AUTH_TOKEN
+静默 401）；③ 与 UI 保存流无共享锁序的 lost-update 竞窗。update_mp 的
+损坏拒写分支恰好堵住 ①；journal 载荷携带完整候选（含 token）闭合 ②；
+同一事务管线消 ③。
 """
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 
 FIELD = "local_client_token"
+
+logger = logging.getLogger("magic-proxy.local-token")
 
 
 def _read(path: str) -> dict:
@@ -23,23 +33,20 @@ def _read(path: str) -> dict:
         return {}
 
 
-def _write(path: str, cfg: dict) -> None:
-    # #46 T1c：唯一安全写入口（mkstemp 唯一临时名 + chmod 0600 + 原子
-    # 替换 + 失败清理）——旧手写管线用固定 path+".tmp" 名，并发写互相
-    # 截断且失败无清理。
-    from shared import config_store
-    ok = config_store.atomic_write(
-        path, json.dumps(cfg, indent=2, ensure_ascii=False))
-    if not ok:
-        raise OSError(f"无法写入本地 token 存储文件 {path}")
-
-
 def get_local_token(path: str) -> str:
-    """幂等读取；不存在则生成一次并落盘（0600）。"""
-    cfg = _read(path)
-    tok = cfg.get(FIELD)
+    """幂等读取；不存在则生成一次并经事务边界落盘（0600）。
+
+    写失败（含主文件损坏拒写）时 token 仍返回——本次会话可用，下次
+    启动重新生成；**绝不以覆写换持久化**。
+    """
+    tok = _read(path).get(FIELD)
     if isinstance(tok, str) and tok:
         return tok
-    cfg[FIELD] = secrets.token_hex(16)
-    _write(path, cfg)
-    return cfg[FIELD]
+    tok = secrets.token_hex(16)
+    from mpconf.config_state import ConfigStateStore
+    result = ConfigStateStore(mp_path=path, keychain=None).update_mp(
+        lambda c: {**c, FIELD: tok})
+    if not result.ok:
+        logger.warning("local token 未持久化（%s）——本次会话仍可用，"
+                       "下次启动将重新生成", result.errors[:1] or result.code)
+    return tok

@@ -57,7 +57,6 @@ _HAN_WHITELIST = {
     "tunnel/ssh_launch.py": "M4：stderr 失败分类表",
     "mpconf/config.py": "M4：错误/提示文案",
     "mpconf/config_state.py": "M4：事务错误文案",
-    "mpconf/local_token.py": "M4：token 存储错误",
     "mpconf/validate.py": "M3：校验错误行",
     "shellui/log_window.py": "M4：日志窗标题",
     "shellui/webview_window.py": "M4：设置窗标题/脚本",

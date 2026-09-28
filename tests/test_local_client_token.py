@@ -18,6 +18,30 @@ from shared.provider_auth import build_outbound_headers
 
 
 class TestTokenLifecycle(unittest.TestCase):
+    def test_corrupt_config_never_overwritten(self):
+        """R8-C3 回归：主文件损坏时 token 仍可取，但文件内容绝不覆写
+        （此前裸 read-modify-write 会把整文件重写成单键 = 配置蒸发）。"""
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = str(Path(d) / "magic-proxy.json")
+            with open(cfg_path, "w") as f:
+                f.write("{corrupt json")
+            tok = get_local_token(cfg_path)
+            self.assertTrue(tok)
+            with open(cfg_path) as f:
+                self.assertEqual(f.read(), "{corrupt json")
+
+    def test_write_goes_through_transaction_store(self):
+        """写径经 update_mp：落盘的是完整事务产物（含 schema 默认面），
+        不是只含 token 的单键文件。"""
+        import json as _json
+        with tempfile.TemporaryDirectory() as d:
+            cfg_path = str(Path(d) / "magic-proxy.json")
+            tok = get_local_token(cfg_path)
+            with open(cfg_path) as f:
+                data = _json.load(f)
+        self.assertEqual(data.get("local_client_token"), tok)
+        self.assertIn("servers", data)      # 事务管线产物，非单键覆写
+
     def test_generate_once_and_persist_0600(self):
         with tempfile.TemporaryDirectory() as d:
             cfg_path = str(Path(d) / "magic-proxy.json")
