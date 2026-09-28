@@ -702,3 +702,14 @@ test("collectServers reads per-row enabled switches", () => {
     ]), "行内启用开关经 aria-checked 读回（逐条启停的配置面）");
   assert.equal(rt.run("dirty"), true);
 });
+
+
+test('vpn 函数体不得引用守卫收敛已删除的下标变量（2eada40 回归钉）', () => {
+  const html = HTML;
+  // 守卫收敛后 i 的声明只在 vpnTarget/removeServer 内——vpn 成功路径
+  // 的表单回写必须走 tgt.row（曾因 S.mp.servers[i] 残留 ReferenceError）
+  assert.ok(!/vpnNode\(S\.mp\.servers\[i\]\)/.test(html),
+    'vpn 成功路径回写必须用 vpnTarget() 的 row 引用，不得用下标 i');
+  assert.ok(/server_id:tgt\.server_id/.test(html) && /vpnNode\(tgt\.row\)/.test(html),
+    'vpnTarget 寻址与回写两半必须同时在册');
+});

@@ -1746,7 +1746,7 @@ const VPN_TAIL_KEYS={connecting:'vpn.tail.connecting',connected:'vpn.tail.connec
 // 不再错位写错服务器（服务端按磁盘 id 解析，index 仅为兼容回退）
 function vpnTarget(){collectServers();const ts=S.mp.servers||[],i=activeTunnel;
   if(!(i>=0&&i<ts.length))return null;
-  const t=ts[i];return (t&&t.id)?{server_id:t.id}:null;}
+  const t=ts[i];return (t&&t.id)?{server_id:t.id,row:t}:null;}
 let _vpnForceArmedAt=0,_vpnPollTimer=null;
 // 文件选择：原生窗走桥接（pickVpnProfile → NSOpenPanel → 原生读内容喂
 // vpnFileDelivered——WKWebView 的 HTML file input 需 completion block，
@@ -1770,7 +1770,7 @@ async function vpnImportContent(btn,content){
     const r=await apiFetch('/api/vpn-profile',{method:'POST',headers:apiHeaders(null,{'Content-Type':'application/json'}),body:JSON.stringify({server_id:tgt.server_id,content})});
     const d=await r.json();
     if(!d.ok){_setProbeResult('vpn-feedback','❌ '+(d.error||tt('ui.vpn.import_failed')),'var(--danger)');return;}
-    const v=vpnNode(S.mp.servers[i]);
+    const v=vpnNode(tgt.row);
     v.profile_set=true;
     v.auth=d.needs_credentials?'userpass':'none';
     const notes=[];
@@ -1793,7 +1793,7 @@ async function vpnSavePw(btn){
     const d=await r.json();
     if(!d.ok){toast(tt('ui.vpn.pw_failed'),true);return;}
     inp.value='';
-    vpnNode(S.mp.servers[i]).password_set=true;
+    vpnNode(tgt.row).password_set=true;
     toast(tt('ui.vpn.pw_saved'));
   }catch(e){toast(tt('ui.vpn.pw_failed'),true);}
   finally{btn.disabled=false;btn.textContent=orig;renderView();}
