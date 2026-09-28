@@ -3,7 +3,7 @@
 set -e
 
 # Version. Bump this when cutting a new release; also tag git with v$VERSION.
-VERSION="0.15.0"
+VERSION="0.16.0"
 MAIN_PYTHON_BIN="${MAIN_PYTHON_BIN:-python3.12}"
 
 if ! command -v "$MAIN_PYTHON_BIN" >/dev/null 2>&1; then
