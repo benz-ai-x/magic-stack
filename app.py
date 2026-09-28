@@ -635,9 +635,12 @@ class MagicProxyApp(rumps.App):
         self._lifecycle.tick(self._config.get("capture_port", DEFAULT_CAPTURE_PORT))
         mounts_active = (self._mounts.any_mounted()
                          or self._mounts.any_session_connected())
+        # #118 接线事故（v0.15.0）：此处曾引用未定义的 s，空闲态每拍
+        # NameError → sync_sleep/_tick_relaunch 永不执行（rumps 吞异常
+        # 无感）——TestOnTickIdle 钉住
         sleep_status = ("connected"
                         if (self._conn.any_connected or mounts_active)
-                        else s)
+                        else self._conn.ssh.status)
         sleep_paused = (self._conn.paused
                         and not self._conn.any_forward_session_connected
                         and not mounts_active)

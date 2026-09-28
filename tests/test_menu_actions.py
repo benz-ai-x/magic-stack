@@ -271,6 +271,47 @@ class TestVpnAccessSwitch(unittest.TestCase):
         self.assertEqual(a._conn.reconnect_forwards_now.call_count, 1)
 
 
+class TestOnTickIdle(unittest.TestCase):
+    """P0 回归（#118 接线事故，v0.15.0）：_on_tick 三元 else 分支曾引用
+    未定义的 s——空闲态（SSH 未连+无转发+无挂载）每拍 NameError，rumps
+    吞异常无感，其后 sync_sleep / _tick_relaunch 整段停摆（防睡眠开着
+    永不释放、relaunch 状态机卡死）。"""
+
+    def _idle_app(self, ssh_status="error"):
+        a = _make_app()
+        a._stats = MagicMock()
+        a._vpn_client = None
+        a._conn.ssh.status = ssh_status
+        a._conn.any_connected = False
+        a._conn.any_forward_session_connected = False
+        a._conn.paused = False
+        a._mounts.any_mounted.return_value = False
+        a._mounts.any_session_connected.return_value = False
+        a._relaunch_waiter = None
+        return a
+
+    def test_idle_tick_no_name_error_and_syncs_sleep(self):
+        a = self._idle_app(ssh_status="error")
+        a._on_tick(None)  # 修复前：此处抛 NameError
+        # else 分支取 ssh.status（而非未定义的 s），防睡眠按 error 收敛
+        args, _ = a._lifecycle.sync_sleep.call_args
+        self.assertEqual(args[0], "error")
+        self.assertFalse(args[1])
+
+    def test_idle_tick_stopped_status(self):
+        a = self._idle_app(ssh_status="stopped")
+        a._on_tick(None)
+        args, _ = a._lifecycle.sync_sleep.call_args
+        self.assertEqual(args[0], "stopped")
+
+    def test_connected_tick_uses_connected(self):
+        a = self._idle_app()
+        a._conn.any_connected = True
+        a._on_tick(None)
+        args, _ = a._lifecycle.sync_sleep.call_args
+        self.assertEqual(args[0], "connected")
+
+
 class TestSuanpanActions(unittest.TestCase):
     """toggle/reload/restart 现在内联在 app.py 里，直接调用
     SuanpanRuntime 的公开方法（running / start / stop / reload /
