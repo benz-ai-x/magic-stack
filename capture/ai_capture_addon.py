@@ -57,47 +57,50 @@ def match_provider(host):
     return None
 
 
+# 端点表（R8-C7b：原 identify() 的 40 行路径梯子表化——纯数据穿代码
+# 衣是同文件两形态：host 半边本就是表）。match: "eq"（精确）|"suffix"
+# （deepseek 的区域前缀端点）。新增厂商 = host 表加行 + 此表加行，
+# 与 CAPTURE_HOST_SUFFIXES 同屏对读。
+CAPTURE_PATHS = {
+    "openai": (
+        ("/v1/chat/completions", "chat.completions", "eq"),
+        ("/v1/responses", "responses", "eq"),
+    ),
+    "anthropic": (
+        ("/v1/messages", "messages", "eq"),
+    ),
+    "deepseek": (
+        ("/chat/completions", "chat.completions", "suffix"),
+    ),
+    "doubao": (
+        ("/api/v3/chat/completions", "chat.completions", "eq"),
+    ),
+    "qwen": (
+        ("/compatible-mode/v1/chat/completions", "chat.completions", "eq"),
+        ("/api/v1/services/aigc/text-generation/generation",
+         "dashscope.native", "eq"),
+    ),
+    "minimax": (
+        ("/v1/text/chatcompletion_v2", "chat.completions", "eq"),
+        ("/v1/text/chatcompletion_pro", "minimax.pro", "eq"),
+    ),
+}
+
+
 def identify(host, path):
     """Map (host, path) to (provider, variant), or None to pass through.
 
     Host matched by suffix (robust to sub-domains / regions); path pins the
-    chat endpoint so non-chat calls (embeddings / images / models) pass through.
+    chat endpoint so non-chat calls (embeddings / images / models) pass
+    through（端点知识表驱动 CAPTURE_PATHS——与 host 表同一屏可对读）.
     """
     provider = match_provider(host)
     if provider is None:
         return None
     path = (path or "").split("?", 1)[0].split("#", 1)[0]
-
-    if provider == "openai":
-        if path == "/v1/chat/completions":
-            return ("openai", "chat.completions")
-        if path == "/v1/responses":
-            return ("openai", "responses")
-        return None
-    if provider == "anthropic":
-        if path == "/v1/messages":
-            return ("anthropic", "messages")
-        return None
-    if provider == "deepseek":
-        if path.endswith("/chat/completions"):
-            return ("deepseek", "chat.completions")
-        return None
-    if provider == "doubao":
-        if path == "/api/v3/chat/completions":
-            return ("doubao", "chat.completions")
-        return None
-    if provider == "qwen":
-        if path == "/compatible-mode/v1/chat/completions":
-            return ("qwen", "chat.completions")
-        if path == "/api/v1/services/aigc/text-generation/generation":
-            return ("qwen", "dashscope.native")
-        return None
-    if provider == "minimax":
-        if path == "/v1/text/chatcompletion_v2":
-            return ("minimax", "chat.completions")
-        if path == "/v1/text/chatcompletion_pro":
-            return ("minimax", "minimax.pro")
-        return None
+    for endpoint, variant, mode in CAPTURE_PATHS.get(provider, ()):
+        if path == endpoint if mode == "eq" else path.endswith(endpoint):
+            return (provider, variant)
     return None
 
 
