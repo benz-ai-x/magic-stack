@@ -32,7 +32,7 @@ class SubprocessMonitor:
     _STATUS_STOPPED = "stopped"
     _STATUS_ERROR = "error"
 
-    def __init__(self, *, line_sink=None):
+    def __init__(self, *, line_sink=None, capture_stdout=False):
         self.process = None
         self._status = self._STATUS_STOPPED
         self._error_msg = ""
@@ -45,6 +45,9 @@ class SubprocessMonitor:
         # read (in addition to accumulating in _log_lines). Lets a monitor own
         # its live-log forwarding instead of forcing callers to poll the deque.
         self._line_sink = line_sink
+        # capture_stdout=True（openvpn 用）：子进程诊断走 stdout——构造
+        # 期声明而非 _start_process 参数（基类接口不为单消费者开形状口子）
+        self._capture_stdout = capture_stdout
 
     @property
     def status(self):
@@ -87,15 +90,15 @@ class SubprocessMonitor:
 
     # ── launch helper (called by subclass start()) ─────────────────
 
-    def _start_process(self, cmd, *, env=None, pass_fds=(), display_cmd=None,
-                       capture_stdout=False):
+    def _start_process(self, cmd, *, env=None, pass_fds=(), display_cmd=None):
         """Common Popen + stderr reader thread launch. Returns True on success.
 
-        capture_stdout=True（openvpn 用）：子进程诊断走 **stdout**（版本
-        banner、管理口 bind 失败等致命错误全在 stdout，stderr 恒空）——
-        不捕获则秒退子进程的死因被 DEVNULL 吞掉，monitor 只见
-        「starting 永不就绪」（真机定位教训，2026-09-27）。
+        子进程诊断走 stdout 还是 stderr 由构造器 capture_stdout 决定
+        （openvpn 的致命错误全在 stdout，stderr 恒空——不捕获则秒退
+        子进程的死因被 DEVNULL 吞掉，monitor 只见「starting 永不就绪」，
+        真机定位教训 2026-09-27）。
         """
+        capture_stdout = self._capture_stdout
         self._cmd_str = display_cmd or " ".join(cmd)
         self._status = self._STATUS_STARTING
         self._error_msg = ""
@@ -136,15 +139,26 @@ class SubprocessMonitor:
     def _read_stderr(self, proc):
         self._read_stream(proc, proc.stderr)
 
+    def _emit_log_line(self, text):
+        """日志行入库 + 转发 line_sink 的单一归宿（stderr reader 线程与
+        子类自定义日志源——如 openvpn 的 mgmt 事件流——共用同一语义）。
+
+        sink 异常不外泄：转发是旁路诊断，不该杀死读流/事件线程
+        （VpnClient._on_log 的真机教训：mgmt 线程死了事件流全断）。"""
+        with self._log_lock:
+            self._log_lines.append(text)
+        if self._line_sink:
+            try:
+                self._line_sink(text)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _read_stream(self, proc, stream):
         try:
             for line in stream:
                 decoded = line.decode(errors="replace").rstrip()
                 if decoded:
-                    with self._log_lock:
-                        self._log_lines.append(decoded)
-                    if self._line_sink:
-                        self._line_sink(decoded)
+                    self._emit_log_line(decoded)
         except Exception:
             logger.exception("stream reader crashed")
         finally:
@@ -163,6 +177,10 @@ class SubprocessMonitor:
         closes it on EOF. Calling stderr.close() on this thread deadlocks:
         BufferedReader.close() blocks on the same buffer lock the reader
         holds while blocked in read().
+
+        另一套停机方言的子类（如 openvpn 的管理口 SIGTERM 序列）整体
+        覆写本方法——但必须保持 blocking 契约（R7-C1：quit 路径绝不
+        主线程裸等待）。
         """
         if self.process is None:
             self._status = self._STATUS_STOPPED

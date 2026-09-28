@@ -26,12 +26,9 @@ from shared.defaults import (DEFAULT_CAPTURE_DIR, DEFAULT_CAPTURE_PORT,
                              VPN_MANAGEMENT_PORT)
 from mpconf.config import (  # noqa: F401 — DEFAULT_CONFIG 是模块导出符号
     DEFAULT_CONFIG, load_config, merge_config, resolve_mount_dir,
-    server_openvpn, servers)
+    servers)
 from mount.coordinator import MountCoordinator
-from vpn import privilege as vpn_privilege
-from vpn import profile_store as vpn_profile_store
-from vpn import dns_scripts as vpn_dns_scripts
-from vpn.openvpn_client import VpnClient
+from vpn.coordinator import MenuVpn, VpnCoordinator
 from shared.runtime_state import RuntimeProjection
 from shellui.log_window import LogBuffer, show_log_window
 from shellui.webview_window import show_config_window
@@ -51,30 +48,14 @@ VERSION_DISPLAY = version_display(VERSION, build_stamp())
 
 log_buffer = LogBuffer()
 
-# VPN 结构化错误码 → 文案键（字面键名表——取词守卫纪律：表存键名，
-# t() 调用点查表；键全集在 shared/locales 双侧登记）
-_VPN_ERR_KEYS = {
-    "auth_failed": "vpn.err.auth_failed",
-    "auth_required": "vpn.err.auth_required",
-    "auth_challenge_unsupported": "vpn.err.challenge",
-    "cipher_mismatch": "vpn.err.cipher",
-    "cert_expired": "vpn.err.cert_expired",
-    "cert_invalid": "vpn.err.cert_invalid",
-    "tls_error": "vpn.err.tls",
-    "unreachable": "vpn.err.unreachable",
-    "server_exit": "vpn.err.server_exit",
-    "crashed": "vpn.err.crashed",
-    "mgmt_lost": "vpn.err.mgmt_lost",
-    "mgmt_attach_failed": "vpn.err.mgmt_attach",
-    "start_failed": "vpn.err.start_failed",
-    "fatal": "vpn.err.generic",
-}
-_VPN_INSTALL_ERR_KEYS = {
-    "cancelled": "vpn.err.install_cancelled",
-    "sudoers_verify_failed": "vpn.err.install_verify",
-    "openvpn_missing": "vpn.err.no_binary_code",
-    "osascript_failed": "vpn.err.install_generic",
-}
+
+def _menu_vpn_fields(a) -> dict:
+    """MenuState 的 VPN 四字段经协调器单投影（半构造替身兜底 idle）。"""
+    vpn = getattr(a, "_vpn", None)
+    mv = vpn.menu_vpn() if vpn is not None else MenuVpn(
+        status="idle", server_name="", error_kind="", tun_ip="")
+    return {"vpn_status": mv.status, "vpn_server": mv.server_name,
+            "vpn_error": mv.error_kind, "vpn_tun_ip": mv.tun_ip}
 
 
 def _thread_excepthook(args):
@@ -208,12 +189,16 @@ class MagicProxyApp(rumps.App):
         # Non-blocking quit→relaunch state machine for proxied app launches
         self._relaunch_waiter = None
 
-        # VPN 客户端（M2 接线）：全局至多一条（spec §5.3）——懒构造，
-        # 每次连接按当次解析的二进制/凭证重建；投影 lambda 惰性读
-        self._vpn_client = None
-        # 连接并发闸：连点/菜单+设置窗双入口同时触发时只跑一个
-        # （屏障与 VpnClient 重建都不重入）
-        self._vpn_connect_lock = threading.Lock()
+        # VPN 接入协调器（R7-C1）：连接序列/互斥切换后置/established
+        # 重建/错误码表/客户端生命周期/菜单投影单一归宿在 vpn 域——
+        # app 只注入回调与翻译意图（与 SSH 侧 ConnectionCoordinator
+        # 对称）。依赖全注入，构造期零副作用。
+        self._vpn = VpnCoordinator(
+            get_config=lambda: self._config,
+            switch_access=self._switch_access_for_vpn,
+            on_established=self._on_vpn_established,
+            notify=self._notify,
+            mark_dirty=self._dirty)
 
         # Services (AI router + capture + system proxy + sleep + config
         # server): LifecycleRuntime 持有全部构造/启动/退出顺序（架构候选
@@ -232,8 +217,9 @@ class MagicProxyApp(rumps.App):
                 capture_active=self._capture_ctrl.actively_running,
                 forwards=tuple(self._conn.forward_sessions()),
                 mounts=tuple(self._mounts.mount_states()),
-                vpn=(self._vpn_client.snapshot()
-                     if self._vpn_client is not None else None)),
+                vpn=(self._vpn.snapshot()
+                     if getattr(self, "_vpn", None) is not None
+                     else None)),
             on_mp_saved=self._on_mp_saved,
         )
         self._suanpan = self._lifecycle.suanpan
@@ -241,11 +227,12 @@ class MagicProxyApp(rumps.App):
         self._sys_proxy = self._lifecycle.sys_proxy
         self._capture = self._lifecycle.capture
         self._config_server = self._lifecycle.config_server
-        # VPN 动作 seam（M2）：connect/disconnect 是 app 侧动作（VpnClient
-        # 持有者 + 互斥屏障），设置窗 HTTP 端点经此回调——与 runtime_state_fn
-        # 同款注入，浏览器直开场景同路径可用（不经原生 bridge）
+        # VPN 动作 seam（M2/R7-C1）：connect/disconnect 意图与 install
+        # 序列在 vpn/coordinator 单一归宿，HTTP 端点经注入回调——与
+        # runtime_state_fn 同款，浏览器直开场景同路径可用
         self._config_server.vpn_connect_fn = self._vpn_connect_intent
         self._config_server.vpn_disconnect_fn = self._vpn_disconnect_intent
+        self._config_server.vpn_install_fn = self._vpn.install_for
         # 用户意图单一归宿（架构评审 R5 候选 1）：菜单回调与设置窗桥接
         # 两套 adapter 共用——guard 分派/线程纪律/通知/dirty 在 intents
         # 独占，app 只做翻译（菜单从状态推导、桥接从 action 字符串映射）
@@ -264,8 +251,8 @@ class MagicProxyApp(rumps.App):
             hold_copy_latch=lambda: self._set_config_holders(
                 copy_latch=True),
             get_agent_instructions=self._config_server.agent_instructions,
-            vpn_connect=self._vpn_do_connect,
-            vpn_disconnect=self._vpn_do_disconnect,
+            vpn_connect=self._vpn.connect,
+            vpn_disconnect=self._vpn.disconnect,
         )
         # ADR-009 配置服务持有者：设置窗开着 / 复制指令会话闩锁。
         # config_api_enabled 是第三持有者（磁盘真相，经 self._config 读）。
@@ -276,10 +263,8 @@ class MagicProxyApp(rumps.App):
             # 僵尸实例形态继续起菜单。
             rumps.alert("Magic Stack", i18n.t("alert.instance_running"))
             raise SystemExit(0)
-        # VPN 启动期 reconcile（spec §5.4）：上次异常退出可能留下占着
-        # 管理口的 root openvpn 孤儿与未恢复的 DNS——收养 SIGTERM + DNS
-        # 标志补跑。缺 sudoers/二进制（首次使用）静默跳过。
-        self._vpn_startup_reconcile()
+        # VPN 启动期 reconcile（spec §5.4，归宿 vpn/coordinator）
+        self._vpn.startup_reconcile()
 
         # Menu
         self._menu_builder = MenuBuilder(
@@ -380,27 +365,10 @@ class MagicProxyApp(rumps.App):
             forward_states=tuple(self._conn.forward_sessions()),
             mount_states=tuple(self._mounts.mount_states()),
             language=i18n.language(),
-            vpn_status=(getattr(self, "_vpn_client").vpn.status
-                        if getattr(self, "_vpn_client", None) is not None
-                        else "idle"),
-            vpn_server=((self._vpn_configured_server() or {}).get("name")
-                        or ""),
-            vpn_error=(getattr(self, "_vpn_client").vpn.error_kind
-                       if getattr(self, "_vpn_client", None) is not None
-                       else ""),
-            vpn_tun_ip=(getattr(self, "_vpn_client").vpn.tun_ip
-                        if getattr(self, "_vpn_client", None) is not None
-                        else ""),
+            **_menu_vpn_fields(self),
         )
 
     # ── VPN（M2 接线，spec §3.3/§7.2）────────────────────
-
-    def _vpn_configured_server(self):
-        """「已配置 VPN 的服务器」单一解析：profile_set 的第一台。"""
-        for s in servers(self._config):
-            if isinstance(s, dict) and server_openvpn(s).get("profile_set"):
-                return s
-        return None
 
     def _vpn_connect_intent(self, index, force=False):
         """设置窗 HTTP 入口：同步校验（可拒）→ 意图层后台执行。
@@ -411,12 +379,10 @@ class MagicProxyApp(rumps.App):
                 or not 0 <= index < len(rows)):
             return {"ok": False, "error": "bad_index"}
         server = rows[index]
-        # profile 判定以落盘文件为准（导入端点即时写文件）——不依赖保存
-        # 流的 profile_set 布尔：真机案例（2026-09-27）导入后未保存，连
-        # 接被 no_profile 弹回而用户只见「没反应」
-        if not (server_openvpn(server).get("profile_set")
-                or vpn_profile_store.profile_exists(server.get("id") or "")):
-            return {"ok": False, "error": "no_profile"}
+        # profile 前置（含落盘文件判定）单一归宿在 vpn/coordinator
+        code = self._vpn.connect_precheck(server)
+        if code:
+            return {"ok": False, "error": code}
         # 接入互斥（ADR-011 修订）：仅 -D 接入活跃时拒连，UI 确认后
         # force 重发——转发/NFS 属服务层，不再拦 VPN
         if not force and self._access_active():
@@ -434,109 +400,31 @@ class MagicProxyApp(rumps.App):
         VPN——接入互斥只发生在接入面。"""
         return self._conn.ssh.status in ("connecting", "connected")
 
-    def _vpn_do_connect(self, server):
-        """连接核心（intents 线程纪律：daemon 后台跑）。接入层切换 =
-        只停 -D 会话（ADR-011 修订：服务层转发/NFS 不陪葬）；断开不
-        自动回切接入。并发闸：重入即跳过（连点保护——多线程同时做接入
-        切换/重建客户端会互相踩，真机连点场景）。"""
-        if not self._vpn_connect_lock.acquire(blocking=False):
-            logger.info("vpn connect skipped: already in flight")
-            return
-        try:
-            self._vpn_do_connect_locked(server)
-        finally:
-            self._vpn_connect_lock.release()
-
-    def _vpn_do_connect_locked(self, server):
-        logger.info("vpn connect requested: server=%s", server.get("id"))
-        binary = vpn_privilege.resolve_openvpn_bin()
-        if not binary:
-            logger.warning("vpn connect aborted: openvpn binary missing")
-            self._notify(i18n.t("notify.vpn.no_binary"),
-                         i18n.t("notify.vpn.no_binary_body"))
-            return
-        profile_text = vpn_profile_store.load_profile(server.get("id") or "")
-        if not profile_text.strip():
-            logger.warning("vpn connect aborted: profile empty (id=%s)",
-                           server.get("id"))
-            self._notify(i18n.t("notify.vpn.no_profile"), "")
-            return
-        svc = server_openvpn(server)
-        mgmt_pw = keychain.ensure_vpn_mgmt_password()
-        # 重装条件：sudoers 缺失，或磁盘 dns 脚本不是当前版本（脚本
-        # 0755 可读可比对；conf 0600 不可读——其重装挂脚本版本：dns/
-        # conf 组成变更即 bump SCRIPTS_VERSION，杜绝「conf 用到天荒地老」）
-        if not vpn_privilege.check_sudoers(binary) \
-                or not vpn_dns_scripts.assets_current():
-            logger.info("vpn connect: sudoers/assets outdated, installing")
-            ok, code = vpn_privilege.install(
-                conf_text=vpn_privilege.runtime_conf(
-                    profile_text, pull_dns=svc.get("pull_dns", True)),
-                mgmt_password=mgmt_pw)
-            if not ok:
-                logger.warning("vpn connect aborted: install failed (%s)", code)
-                self._notify(
-                    i18n.t("notify.vpn.install_failed"),
-                    i18n.t(_VPN_INSTALL_ERR_KEYS.get(
-                        code, "vpn.err.install_generic")))
-                return
-        # 接入层切换（ADR-011 修订）：只停 -D 会话 + 系统代理收敛
-        # （别指着死掉的 :8888）+ 防睡眠重算——转发会话与 NFS 挂载是
-        # 服务层，原地不动（路由翻转断掉的由 VPN connected 事件重建）
-        logger.info("vpn connect: switching access layer (-D only)")
+    def _switch_access_for_vpn(self):
+        """VPN 接入切换的后置收敛（注入 vpn/coordinator）：只停 -D 会话
+        + 系统代理收敛（别指着死掉的 :8888）+ 防睡眠重算——转发会话与
+        NFS 挂载是服务层，原地不动（ADR-011 修订）。"""
         self._conn.stop_access()
         self._sys_proxy.sync()
         self._lifecycle.sync_sleep(self._conn.ssh.status, self._conn.paused,
                              self._config.get("prevent_sleep", False))
 
-        def _creds():
-            return (svc.get("username", ""),
-                    keychain.get_vpn_password(server))
-
-        if self._vpn_client is not None:
-            self._vpn_client.stop()
-        self._vpn_client = VpnClient(
-            full_cmd=vpn_privilege.build_full_command(binary),
-            mgmt_port=VPN_MANAGEMENT_PORT,
-            mgmt_password=mgmt_pw or None,
-            credentials=_creds,
-            on_state_change=self._on_vpn_state_change,
-            on_error=self._vpn_error_notify,
-        )
-        self._vpn_client.start()
-        self._dirty()
-
-    def _on_vpn_state_change(self, snap):
-        """VPN 状态回调：dirty 刷菜单；established 时路由翻转已断存量
-        TCP——服务层僵尸重建（转发 + NFS 会话，与唤醒同语义；**绝不
-        拉起 -D**：接入互斥，这是与 handle_reconnect_trigger 的根本
-        差异）。"""
-        self._dirty()
-        if isinstance(snap, dict) and snap.get("status") == "connected":
-            logger.info("vpn established: rebuilding service sessions")
-            self._conn.reconnect_forwards_now()
-            self._mounts.reconnect_now()
-
-    def _vpn_do_disconnect(self):
-        client = self._vpn_client
-        if client is not None:
-            client.stop()
-        self._dirty()
-
-    def _vpn_error_notify(self, kind, text):
-        self._notify(i18n.t(_VPN_ERR_KEYS.get(kind, "vpn.err.generic")),
-                     text or "")
+    def _on_vpn_established(self):
+        """VPN established：路由翻转已断存量 TCP——服务层僵尸重建
+        （转发 + NFS 会话，与唤醒同语义；**绝不拉起 -D**：接入互斥）。
+        归宿在 vpn/coordinator._on_state_change，此处只是 app 侧接线。"""
+        self._conn.reconnect_forwards_now()
+        self._mounts.reconnect_now()
 
     def toggle_vpn(self, _item):
         """菜单「连接/断开 VPN」：状态推导动作（A 类动词语法）。
         SSH 活跃时不再踢去设置窗（真机反馈的死胡同）——原生确认框
         一步到位：确认即拆屏障连接。"""
-        client = self._vpn_client
-        if client is not None and client.vpn.status in (
-                "connecting", "connected", "reconnecting"):
+        vpn = getattr(self, "_vpn", None)
+        if vpn is not None and vpn.is_active():
             self._intents.vpn_disconnect()
             return
-        server = self._vpn_configured_server()
+        server = vpn.configured_server() if vpn is not None else None
         if server is None:
             self.show_preferences(None)
             return
@@ -557,10 +445,8 @@ class MagicProxyApp(rumps.App):
         确认切回 SSH 接入（断 VPN + 起 -D；服务层会话自管，无需恢复面
         ——ADR-011 修订）；连接中 → 取消；已连接 → 停止接入（转发/
         挂载不受影响）；空闲/失败 → 发起连接。"""
-        client = getattr(self, "_vpn_client", None)
-        vpn_active = client is not None and client.vpn.status in (
-            "connecting", "connected", "reconnecting")
-        if vpn_active:
+        vpn = getattr(self, "_vpn", None)
+        if vpn is not None and vpn.is_active():
             logger.info("ssh access row: vpn active, confirming switch")
             # rumps.alert 第 3 个位置参数即 ok——标题/正文各占一个位置
             # 参数，按钮文案只能走关键字（3 位置 + ok= 会 TypeError）
@@ -581,21 +467,6 @@ class MagicProxyApp(rumps.App):
         else:
             self._intents.reconnect_proxy_or_forward()
 
-    def _vpn_startup_reconcile(self):
-        """启动期收养（spec §5.4 落地到生命周期）：残留 root openvpn
-        （上次崩溃/强杀后永久占管理口者）经管理口 SIGTERM + DNS 标志
-        补跑。任何失败只记日志，绝不阻断启动。"""
-        try:
-            from vpn.openvpn_client import adopt_stale_openvpn
-            from vpn import dns_scripts
-            pw = keychain.get_vpn_mgmt_password()
-            binp = vpn_privilege.resolve_openvpn_bin()
-            if pw and binp and vpn_privilege.check_sudoers(binp):
-                adopt_stale_openvpn(pw, VPN_MANAGEMENT_PORT, timeout=1.0)
-                dns_scripts.run_reconcile()
-        except Exception:
-            logger.exception("vpn startup reconcile failed")
-
     # ── tick ─────────────────────────────────────────────
 
     def _on_wake_event(self):
@@ -607,12 +478,12 @@ class MagicProxyApp(rumps.App):
         self._stats.tick()
         self._conn.handle_retry()
         # getattr 兜底：半构造的测试替身无此属性（_shutdown_done 同款纪律）
-        if getattr(self, "_vpn_client", None) is not None:
-            self._vpn_client.check()
+        vpn = getattr(self, "_vpn", None)
+        if vpn is not None:
+            vpn.check_tick()
 
         # 主图标色（用户拍板语义）：灰=无连接 / 蓝=SSH / 绿=VPN / 黄=连接中
-        vpn_client = getattr(self, "_vpn_client", None)
-        vpn_st = vpn_client.vpn.status if vpn_client is not None else "idle"
+        vpn_st = vpn.status() if vpn is not None else "idle"
         self._menu_builder.set_status_icon(
             _menubar_color(self._conn.ssh.status, self._conn.paused, vpn_st))
 
@@ -1226,9 +1097,10 @@ class MagicProxyApp(rumps.App):
         if getattr(self, "_shutdown_done", False):
             return
         self._shutdown_done = True
-        # VPN 先停（SIGTERM 优雅路径跑 DNS down 脚本——干净还原系统设置）
-        if getattr(self, "_vpn_client", None) is not None:
-            self._vpn_client.stop()
+        # VPN 先停（SIGTERM 优雅路径跑 DNS down 脚本——干净还原系统
+        # 设置）；quit 路径 blocking=False，等待与收养交后台线程
+        if getattr(self, "_vpn", None) is not None:
+            self._vpn.shutdown()
         self._mounts.unmount_all()
         self._lifecycle.quit(self._conn.stop_all)
 

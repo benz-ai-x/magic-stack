@@ -116,7 +116,6 @@ class TestConnectionActions(unittest.TestCase):
     def test_toggle_ssh_idle_click_connects(self):
         """接入行（行即开关）：空闲态点 SSH 行 = 发起连接。"""
         a = _make_app()
-        a._vpn_client = None
         a._conn.ssh.status = "stopped"
         with patch.object(app, "load_config", return_value=None):
             a.toggle_ssh(None)
@@ -126,7 +125,6 @@ class TestConnectionActions(unittest.TestCase):
         """已连接点 SSH 行 = 停止接入（只停 -D，转发/NFS 不陪葬；
         重连走接入行再点）。"""
         a = _make_app()
-        a._vpn_client = None
         a._conn.ssh.status = "connected"
         a._conn.paused = False
         a.toggle_ssh(None)
@@ -137,7 +135,6 @@ class TestConnectionActions(unittest.TestCase):
     def test_toggle_ssh_connecting_click_cancels(self):
         """连接中点 SSH 行 = 取消连接（开关语义的关闭半边）。"""
         a = _make_app()
-        a._vpn_client = None
         a._conn.ssh.status = "connecting"
         a.toggle_ssh(None)
         a._conn.stop_access.assert_called_once()
@@ -146,8 +143,8 @@ class TestConnectionActions(unittest.TestCase):
         """VPN 活跃时点 SSH 行：原生确认 → 断 VPN → 恢复 SSH 会话
         与挂载（显式切换 = 主动恢复）。"""
         a = _make_app()
-        a._vpn_client = MagicMock()
-        a._vpn_client.vpn.status = "connected"
+        a._vpn = MagicMock()
+        a._vpn.is_active.return_value = True
         a._intents = MagicMock()
         with patch("rumps.alert", return_value=True) as alert:
             a.toggle_ssh(None)
@@ -170,7 +167,9 @@ class TestConnectionActions(unittest.TestCase):
             {"id": "t-1", "name": "s1",
              "ssh": {"host": "h1", "port": 22, "auth_type": "key"},
              "services": {"openvpn": {"profile_set": True}}}]})
-        a._vpn_client = None
+        a._vpn = MagicMock()
+        a._vpn.is_active.return_value = False
+        a._vpn.configured_server.return_value = a._config["servers"][0]
         a._conn.ssh.status = "connected"      # 接入层活跃（-D 会话）
         a._mounts.mount_states.return_value = ()
         with patch("rumps.alert", return_value=False) as alert:
@@ -225,51 +224,8 @@ class TestConnectionActions(unittest.TestCase):
 
 class TestVpnAccessSwitch(unittest.TestCase):
     """ADR-011 修订（接入层互斥/服务层自治）：连接 VPN 只停 -D 接入，
-    转发会话与 NFS 挂载不陪葬；VPN established 触发服务层重建。"""
-
-    def _vpn_ready_app(self):
-        import threading
-        a = _make_app({"servers": [
-            {"id": "t-1", "name": "s1",
-             "ssh": {"host": "h1", "port": 22, "auth_type": "key"},
-             "services": {"openvpn": {"profile_set": True}}}]})
-        a._vpn_client = None
-        a._vpn_connect_lock = threading.Lock()
-        return a
-
-    def test_vpn_connect_stops_access_only(self):
-        """屏障收窄：stop_access + 系统代理收敛；stop_all 与 NFS 卸载
-        绝不出现（此前 M2 全量屏障的陪葬面）。"""
-        a = self._vpn_ready_app()
-        with patch.object(app, "vpn_privilege") as priv, \
-                patch.object(app, "vpn_profile_store") as store, \
-                patch.object(app, "keychain"), \
-                patch.object(app, "vpn_dns_scripts") as dns, \
-                patch.object(app, "VpnClient") as vc:
-            dns.assets_current.return_value = True
-            priv.resolve_openvpn_bin.return_value = "/opt/homevpn"
-            store.load_profile.return_value = "client\nroute 10.0.0.0\n"
-            priv.check_sudoers.return_value = True
-            a._vpn_do_connect_locked(a._config["servers"][0])
-        a._conn.stop_access.assert_called_once()
-        a._conn.stop_all.assert_not_called()
-        a._mounts.unmount_all.assert_not_called()
-        a._sys_proxy.sync.assert_called_once()
-        vc.assert_called_once()
-
-    def test_vpn_established_rebuilds_service_layer_only(self):
-        """VPN connected → 转发/NFS 会话僵尸重建；绝不拉起 -D
-        （接入互斥——handle_reconnect_trigger 不在此路径）。"""
-        a = self._vpn_ready_app()
-        a._on_vpn_state_change({"status": "connected"})
-        a._conn.reconnect_forwards_now.assert_called_once()
-        a._mounts.reconnect_now.assert_called_once()
-        a._conn.start_ssh.assert_not_called()
-        a._conn.handle_reconnect_trigger.assert_not_called()
-        # 非建立态：只刷菜单，不动会话
-        a._on_vpn_state_change({"status": "reconnecting"})
-        self.assertEqual(a._conn.reconnect_forwards_now.call_count, 1)
-
+    转发会话与 NFS 挂载不陪葬。序列与 established 重建的行为断言在
+    tests/test_vpn_coordinator.py（R7-C1 迁移）；此处保 app 接线面。"""
 
 class TestOnTickIdle(unittest.TestCase):
     """P0 回归（#118 接线事故，v0.15.0）：_on_tick 三元 else 分支曾引用
@@ -280,7 +236,6 @@ class TestOnTickIdle(unittest.TestCase):
     def _idle_app(self, ssh_status="error"):
         a = _make_app()
         a._stats = MagicMock()
-        a._vpn_client = None
         a._conn.ssh.status = ssh_status
         a._conn.any_connected = False
         a._conn.any_forward_session_connected = False

@@ -140,6 +140,15 @@ vpn/ ── OpenVPN 客户端域（spec 与调研：docs/openvpn-client-spec.md�
   （2026-09-27）：接入层互斥/服务层自治——连接 VPN 只停 -D 会话
   （stop_access），转发/NFS 不陪葬；VPN established 触发服务层僵尸重建
   （reconnect_forwards_now + mounts.reconnect_now，绝不拉 -D）；断开不回切接入）
+  coordinator.py ── VpnCoordinator 接入协调器（R7-C1，与
+    ConnectionCoordinator 对称的接入序列单一归宿）：连接序列
+    （resolve 二进制→profile→sudoers/资产重装判据→install→接入切换
+    →VpnClient 重建）+ 安装知识单宿（install_for——设置窗按钮与连接
+    序列同款调用）+ established 服务层重建 + 错误码→i18n 键两表 +
+    启动收养 + snapshot/menu_vpn 单投影（app 不再 getattr 捅 VpnClient
+    内部）；依赖全注入（get_config/switch_access/on_established/
+    notify/mark_dirty——vpn 域不横向 import tunnel/services），线程
+    纪律仍归 intents；shutdown 走 blocking=False（quit 不裸等）
   profile.py ── .ovpn 解析/校验/净化单一归宿：脚本/管理类指令剥除
     （root 执行面第二道闸）+ auth-user-pass 改查询式 + inline 块整段
     跳过（块内指令形状的行绝不误伤）

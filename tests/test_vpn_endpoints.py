@@ -70,9 +70,11 @@ class TestVpnEndpoints(unittest.TestCase):
         self.addCleanup(p1.stop); self.addCleanup(p2.stop)
         self.connect_calls = []
         self.disconnect_calls = []
+        self.install_impl = lambda tunnel: (True, "")
         self.server, self.port = _start_server(
             vpn_connect_fn=self._connect,
-            vpn_disconnect_fn=self._disconnect)
+            vpn_disconnect_fn=self._disconnect,
+            vpn_install_fn=lambda t: self.install_impl(t))
         self.token = self.server._token
 
     def _connect(self, index, force=False):
@@ -131,40 +133,20 @@ class TestVpnEndpoints(unittest.TestCase):
         self.assertEqual(code, 400)
 
     def test_install_requires_imported_profile(self):
+        # no_profile 由协调器判定，端点只映射 400（安装序列归宿
+        # vpn/coordinator——见 test_vpn_coordinator）
+        self.install_impl = lambda t: (False, "no_profile")
         code, d = self._post("/api/vpn-install", {"index": 1})
-        self.assertEqual(code, 400)   # t-bbb 无 profile
+        self.assertEqual(code, 400)
 
-    def test_install_invokes_privilege(self):
-        from vpn import profile_store
-        profile_store.save_profile("t-aaa", "client\nremote h 1\n")
-        with patch.object(config_server.vpn_privilege, "install",
-                          return_value=(True, "")) as install, \
-             patch("services.config_server.keychain") as kc:
-            kc.ensure_vpn_mgmt_password.return_value = "pw"
-            code, d = self._post("/api/vpn-install", {"index": 0})
+    def test_install_delegates_and_passes_code(self):
+        calls = []
+        self.install_impl = lambda t: calls.append(t) or (False, "cancelled")
+        code, d = self._post("/api/vpn-install", {"index": 0})
         self.assertEqual(code, 200)
-        self.assertTrue(d["ok"])
-        self.assertEqual(d["error_code"], "")
-        conf_text = install.call_args.kwargs["conf_text"]
-        self.assertIn("remote h 1", conf_text)
-        self.assertNotIn("dhcp-option", conf_text)  # pull_dns=True 默认不注入
-
-    def test_install_pull_dns_false_injects_pull_filter(self):
-        cfg = json.loads(json.dumps(_CFG))
-        cfg["servers"][0]["services"]["openvpn"]["pull_dns"] = False
-        with open(self._mp_path, "w") as fh:
-            fh.write(json.dumps(cfg))
-        from vpn import profile_store
-        profile_store.save_profile("t-aaa", "client\nremote h 1\n")
-        with patch.object(config_server.vpn_privilege, "install",
-                          return_value=(True, "")) as install, \
-             patch("services.config_server.keychain") as kc:
-            kc.ensure_vpn_mgmt_password.return_value = "pw"
-            code, d = self._post("/api/vpn-install", {"index": 0})
-        self.assertEqual(code, 200)
-        self.assertTrue(d["ok"])
-        conf_text = install.call_args.kwargs["conf_text"]
-        self.assertIn('pull-filter ignore "dhcp-option"', conf_text)
+        self.assertFalse(d["ok"])
+        self.assertEqual(d["error_code"], "cancelled")
+        self.assertEqual(calls[0].get("id"), "t-aaa")  # 按磁盘真相解行
 
     def test_connect_seam_passthrough(self):
         code, d = self._post("/api/vpn-connect", {"index": 0, "force": True})

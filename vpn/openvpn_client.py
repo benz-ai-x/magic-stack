@@ -115,7 +115,7 @@ class VpnClient(SubprocessMonitor):
                  credentials=None, on_state_change=None, on_error=None,
                  bytecount_interval=1, attach_timeout=10.0,
                  max_auth_retries=3, line_sink=None):
-        super().__init__(line_sink=line_sink)
+        super().__init__(line_sink=line_sink, capture_stdout=True)
         self._full_cmd = list(full_cmd)
         self._mgmt_port = int(mgmt_port)
         self._mgmt_password = mgmt_password
@@ -164,7 +164,7 @@ class VpnClient(SubprocessMonitor):
         self._fatal_text = ""
         self.vpn = VpnState()
         self.vpn.status = "connecting"
-        if not self._start_process(self._full_cmd, capture_stdout=True):
+        if not self._start_process(self._full_cmd):
             self.vpn.status = "error"
             self.vpn.error_kind = "start_failed"
             self.vpn.error_text = self.error_msg
@@ -213,11 +213,17 @@ class VpnClient(SubprocessMonitor):
         client.send_and_wait(f"bytecount {self._bytecount_interval}")
         logger.info("openvpn management session initialized")
 
-    def stop(self, *, timeout=6.0):
+    def stop(self, blocking=True, *, timeout=6.0):
         """优雅断开：管理口 SIGTERM（down 脚本跑全）→ 等进程退出 → 兜底杀。
 
         EXITING 只是「退出进行中」——必须等进程真正退出才算断开完成
         （spec §2.2）。
+
+        blocking 契约与基类同（R7-C1）：False=quit 路径，SIGTERM 发出
+        即返回，进程等待与收养兜底交后台 daemon 线程——此前主线程裸
+        阻塞（mgmt 2s + wait 6s + terminate 5s + 收养）最坏 ~15s 的
+        quit 挂脸病根。root openvpn 收到 SIGTERM 自行跑 down 脚本退
+        出，不依赖本进程等待。
         """
         self._user_stop = True
         client, self._mgmt = self._mgmt, None
@@ -226,6 +232,19 @@ class VpnClient(SubprocessMonitor):
                 client.send_and_wait("signal SIGTERM", timeout=2.0)
             except (ManagementError, OSError):
                 logger.warning("mgmt SIGTERM failed, falling back")
+        if not blocking:
+            if client is not None:
+                client.close()
+            proc = self.process
+            if proc is not None:
+                self.process = None
+                threading.Thread(target=self._quit_reap, args=(proc,),
+                                 daemon=True).start()
+            self._status = self._STATUS_STOPPED
+            if self.vpn.status != "error":
+                self.vpn.status = "stopped"
+            self._notify_change()
+            return
         proc = self.process
         if proc is not None:
             try:
@@ -246,6 +265,23 @@ class VpnClient(SubprocessMonitor):
         if self.vpn.status != "error":
             self.vpn.status = "stopped"
         self._notify_change()
+
+    def _quit_reap(self, proc):
+        """quit 路径的后台收尾：等进程退出 + 收养兜底（daemon 线程，
+        进程退出时被杀亦无碍——SIGTERM 已发出，残留由下次启动的
+        清场收养兜底）。"""
+        try:
+            proc.wait(timeout=8.0)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        if self._mgmt_password:
+            try:
+                adopt_stale_openvpn(self._mgmt_password, self._mgmt_port)
+            except Exception:  # noqa: BLE001
+                logger.exception("quit adoption failed")
 
     # ── 健康检查（进程层）────────────────────────────────────────
 
@@ -299,13 +335,7 @@ class VpnClient(SubprocessMonitor):
         text = parsed.get("text", "")
         if not text:
             return
-        with self._log_lock:
-            self._log_lines.append(text)
-        if self._line_sink:
-            try:
-                self._line_sink(text)
-            except Exception:  # noqa: BLE001
-                pass
+        self._emit_log_line(text)
         if not self._log_error_kind:
             kind = classify_log(text)
             if kind:

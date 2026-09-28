@@ -717,21 +717,21 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, {"ok": keychain.set_vpn_password(tunnel, password)})
 
     def _api_vpn_install(self, data):
-        """安装到系统：runtime conf + sudoers + DNS 脚本一次管理员授权
-        （幂等）。pull_dns 读已保存配置——先保存再安装。"""
+        """安装到系统（幂等）：安装序列单一归宿在 vpn/coordinator
+        .install_for（与连接序列同款调用——R7-C1 前此处手拼第二份）。
+        pull_dns 读已保存配置——先保存再安装。"""
+        fn = getattr(self.server, "vpn_install_fn", None)
+        if fn is None:
+            self._json(503, {"error": "vpn not available"})
+            return
         tunnel, error = self._saved_tunnel_by_index(data.get("index"))
         if error:
             self._json(400, {"error": error})
             return
-        text = vpn_profile_store.load_profile(tunnel.get("id") or "")
-        if not text.strip():
+        ok, code = fn(tunnel)
+        if code == "no_profile":
             self._json(400, {"error": i18n.t("vpn.err.not_imported")})
             return
-        pull_dns = server_openvpn(tunnel).get("pull_dns", True)
-        conf_text = vpn_privilege.runtime_conf(text, pull_dns=pull_dns)
-        ok, code = vpn_privilege.install(
-            conf_text=conf_text,
-            mgmt_password=keychain.ensure_vpn_mgmt_password())
         self._json(200, {"ok": ok, "error_code": "" if ok else code})
 
     def _api_vpn_connect(self, data):
