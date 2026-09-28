@@ -66,6 +66,23 @@ class TestBuildScriptCoverage(unittest.TestCase):
             "$(python tools/resource_manifest.py --pyinstaller-args)",
             build, "build.sh 必须经 manifest 生成 add-data（不再手抄）")
 
+    def test_no_flat_name_collisions_in_output(self):
+        """R9 复查钉：add-data 平铺到 bundle 根——两源同 basename 即
+        静默覆盖（mount/vpn 的 coordinator.py 曾撞）。清单保留双源
+        （覆盖面真源），冲突消解在生成器输出层（首见去重）——本钉
+        保证**实际下发**的参数永不重名。"""
+        from tools.resource_manifest import pyinstaller_add_data_args
+        from collections import Counter
+        tokens = pyinstaller_add_data_args().splitlines()
+        pairs = [tokens[i + 1] for i, t in enumerate(tokens)
+                 if t == "--add-data"]
+        flats = [p.rsplit("/", 1)[-1].rsplit(":", 1)[0] for p in pairs]
+        dupes = {n: c for n, c in Counter(flats).items() if c > 1}
+        self.assertEqual(
+            dupes, {},
+            f"生成器输出的 add-data 平铺名冲突（bundle 根静默覆盖）: "
+            f"{dupes}")
+
     def test_runtime_modules_exist(self):
         from tools.resource_manifest import RUNTIME_MODULES
         missing = [m for m in RUNTIME_MODULES if not (ROOT / m).is_file()]

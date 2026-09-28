@@ -77,11 +77,20 @@ def pyinstaller_add_data_args() -> str:
     式）。R9-C2：原 build.sh 60 行手抄镜像靠 substring 测试兜底，现
     镜像变消费、真源唯一。"""
     lines = []
+    seen_flat = set()
     for src, dest in RESOURCE_MANIFEST:
         lines += ["--add-data", f"{src}:{dest}"]
+        seen_flat.add(src.rsplit("/", 1)[-1])
     for m in RUNTIME_MODULES:
         if m == "app.py":
             continue  # 入口参数，不走 add-data
+        flat = m.rsplit("/", 1)[-1]
+        if flat in seen_flat:
+            # 平铺冲突去重（R9 复查：mount/coordinator 与 vpn/coordinator
+            # 同名——add-data 平铺到根后者静默覆盖前者；真实 import 由
+            # PyInstaller 追踪按包结构装载，belt 副本留一份即可）
+            continue
+        seen_flat.add(flat)
         lines += ["--add-data", f"{m}:."]
     return "\n".join(lines)
 
