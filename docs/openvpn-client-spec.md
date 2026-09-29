@@ -285,9 +285,11 @@ SIGTERM）→ 仍不退 SIGKILL（接受孤儿风险，靠 §5.4 收养清理兜
 
 - openvpn 自身改的路由/tun：SIGTERM 优雅退出自清；kill -9 后内核回收（残留 utun 无害）。
 - DNS（up 脚本改的）：`dns-up.sh` 快照落 `/Library/MagicStack/openvpn/dns-backup.txt`
-  （三行平文本：服务名 / DNS / 搜索域——sh 侧免 JSON 解析）+ 建标志文件；`dns-down.sh`
-  恢复 + 删标志。app 每次启动与 VPN 断开后 reconcile：标志文件在 = down 没跑过 →
-  经 sudoers 补跑。**实施裁决**：补跑授权并入 openvpn 条目的逗号清单
+  （四行平文本：服务名 / DNS / 搜索域 / IPv6 模式——sh 侧免 JSON 解析；v6 行
+  「Automatic」= up 已服务级禁 v6（setv6LinkLocal，堵 configd 会 reap 手工 reject
+  路由的 v6 泄漏，2026-09-29），「-」= 未动过）+ 建标志文件；`dns-down.sh`
+  恢复 + 删标志。app 每次启动与 VPN 断开后 reconcile：标志文件在 = down
+  没跑过 → 经 sudoers 补跑。**实施裁决**：补跑授权并入 openvpn 条目的逗号清单
   （`/bin/sh <dns-down.sh>`，脚本本体 root-owned 用户不可写），不另开独立行。
 - root 孤儿 openvpn：固定端口 + Keychain 稳定密码 → 启动时连管理口 `signal SIGTERM`
   收尸（Tunnelblick 用「端口编码在日志文件名里」解决同一问题，我们的固定端口方案更简）。

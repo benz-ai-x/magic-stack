@@ -195,6 +195,29 @@ class TestDnsScripts(unittest.TestCase):
         self.assertIn("route -n add -inet6 -reject", dns_scripts.UP_SCRIPT)
         self.assertIn("2000::/3", dns_scripts.UP_SCRIPT)
 
+    def test_up_script_disables_ipv6_service_level(self):
+        """服务级禁 v6 是主防线（2026-09-29 真机：route(8) 手工 reject
+        路由会被 configd 会话中途悄悄 reap——会话存活、无睡眠、8 分钟后
+        路由消失，IPv6 泄漏回归，OpenAI 域名走泄漏路径被 SNI 重置、Codex
+        断连）。setv6LinkLocal 是 configd 亲管的服务配置，扛 RA/SLAAC 刷
+        新与睡眠唤醒。只动 Automatic：Manual 有静态状态不快照、Off/
+        Link-Local 无全球单播可泄漏（reject 路由仍是它们的兜底层）。"""
+        self.assertIn("networksetup -getinfo", dns_scripts.UP_SCRIPT)
+        self.assertIn("setv6LinkLocal", dns_scripts.UP_SCRIPT)
+        self.assertIn('v6snap="Automatic"', dns_scripts.UP_SCRIPT)
+        # 快照第 4 行（意图语义）随备份原子落盘；非 Automatic 记 "-" 并留日志
+        self.assertIn("%s\\n%s\\n%s\\n%s\\n", dns_scripts.UP_SCRIPT)
+        self.assertIn("left untouched", dns_scripts.UP_SCRIPT)
+
+    def test_down_script_restores_ipv6_mode(self):
+        """down 按备份第 4 行还原：Automatic → setv6automatic（对已
+        Automatic 的服务是无害 no-op——up 侧「先写快照、后禁 v6」两步间
+        崩溃，reconcile 补跑 down 即可复原，不留永久禁 v6 的服务）；
+        「-」与空（2026-09-29 前的三行旧备份）不动。"""
+        self.assertIn("sed -n 4p", dns_scripts.DOWN_SCRIPT)
+        self.assertIn("setv6automatic", dns_scripts.DOWN_SCRIPT)
+        self.assertIn("ipv6 mode untouched", dns_scripts.DOWN_SCRIPT)
+
     def test_down_script_withdraws_route_and_guards_generation(self):
         """down 摘 reject 路由 + 代际守卫：还有别的 openvpn 实例在跑就
         绝不还原（迟到/孤儿 down 把新连接刚应用的 DNS 还原掉的竞态，

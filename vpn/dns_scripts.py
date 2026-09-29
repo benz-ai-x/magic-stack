@@ -2,11 +2,25 @@
 
 push 的 dhcp-option 以 ``foreign_option_N`` 环境变量交给 ``--up`` 脚本：
 up 脚本收集 DNS/域名搜索项，应用到持有默认路由的网络服务，把原值快照
-落盘，并顺带装 IPv6 reject 路由（堵 IPv4-only 隧道的 v6 绕行——
-``redirect-gateway ipv6`` 在 macOS 路由装不上，真机实锄；reject 语义
-= 立即回 ICMPv6 不可达，happy-eyeballs 瞬间回落 IPv4 进隧道）；down
-脚本按快照恢复 + 摘路由。崩溃时 down 不会跑——app 启动/断开后以
+落盘；down 脚本按快照恢复。崩溃时 down 不会跑——app 启动/断开后以
 ``marker 存在`` 为判据，经 sudoers 补跑 down（reconcile）。
+
+IPv6 泄漏双层堵口（IPv4-only 隧道，v6 会绕行出隧道）：
+
+1. **服务级禁 v6（主防线，2026-09-29）**——up 对 Automatic 模式的服务
+   ``networksetup -setv6LinkLocal``（保留 fe80，只灭全球单播）。这是
+   configd 亲管的服务配置，扛 RA/SLAAC 刷新与睡眠唤醒。
+2. **reject 路由（兜底）**——``route add -inet6 -reject 2000::/3``。
+   2026-09-28 引入；2026-09-29 真机实锤 route(8) 手工路由会在会话中途
+   被 configd 悄悄 reap（会话存活、无睡眠、无 down——8 分钟后路由消失，
+   IPv6 泄漏回归，OpenAI 域名走泄漏路径被 SNI 重置、Codex 断连），故
+   降级为兜底：Manual-v6 服务（禁不了也不敢动）只剩这层。reject 语义
+   = 立即回 ICMPv6 不可达，happy-eyeballs 瞬间回落 IPv4 进隧道；
+   ``redirect-gateway ipv6`` 在 macOS 装不上路由，真机实锄。
+
+还原幂等是设计约束：down 对快照为 Automatic 的服务无条件
+``-setv6automatic``——up 侧「先写快照、后禁 v6」两步间任意崩溃，补跑
+down 都是无害 no-op，不会留下永久禁 v6 的服务。
 
 竞态免疫（2026-09-28 真机案例：双击重连/孤儿收养场景，旧进程的 down
 在新连接的 up 之后迟到执行，把刚应用的 DNS 还原）：down 还原前先
@@ -36,7 +50,7 @@ MARKER_PATH = f"{SYSTEM_DIR}/dns-active"
 BACKUP_PATH = f"{SYSTEM_DIR}/dns-backup.txt"
 LOG_PATH = f"{SYSTEM_DIR}/dns.log"
 # 语义版本：脚本行为或 runtime conf 组成变更时 bump——磁盘旧版触发重装
-SCRIPTS_VERSION = "2026-09-28.2"
+SCRIPTS_VERSION = "2026-09-29.1"
 
 # IPv6 reject 路由目标：全球单播聚合前缀 2000::/3（黑名单整个公网 v6，
 # ULA/链路本地不受影响）
@@ -47,9 +61,12 @@ _UP_TEMPLATE = r"""#!/bin/sh
 # version: __VERSION__
 # macOS does not apply pushed dhcp-options: collect foreign_option_N and
 # apply them to the service that owns the default route, snapshotting the
-# previous values for down/restore. Also installs an IPv6 reject route
-# (IPv4-only tunnel -> IPv6 must not leak around it). Idempotent (marker
-# short-circuit); every decision logged to __LOG__.
+# previous values for down/restore. Also guards the IPv6 leak around the
+# IPv4-only tunnel: service-level v6 disable is the primary layer (configd
+# owns service config -> survives RA/SLAAC refresh and sleep/wake; one-shot
+# reject routes get silently reaped mid-session, 2026-09-29), the reject
+# route stays as fallback (Manual-v6 services cannot be service-disabled).
+# Idempotent (marker short-circuit); every decision logged to __LOG__.
 set -u
 MARKER="__MARKER__"
 BACKUP="__BACKUP__"
@@ -95,12 +112,29 @@ log "service='$svc'"
 [ -z "$svc" ] && { log "iface maps to no hardware service, abort"; exit 0; }
 cur_dns=$(/usr/sbin/networksetup -getdnsservers "$svc" 2>/dev/null)
 cur_search=$(/usr/sbin/networksetup -getsearchdomains "$svc" 2>/dev/null)
-printf '%s\n%s\n%s\n' "$svc" "$cur_dns" "$cur_search" > "$BACKUP.tmp" && mv "$BACKUP.tmp" "$BACKUP"
+# IPv6 snapshot BEFORE the backup write and the disable: the backup records
+# intent ("Automatic" = we are about to disable), and down restores
+# unconditionally on that value -- restore is idempotent (setting Automatic
+# on an already-Automatic service is a no-op), so a crash anywhere between
+# backup write and disable leaves no permanently-disabled service after
+# reconcile. Only Automatic is touched: Manual carries static v6 state we do
+# not snapshot; Off/Link-Local have no global v6 to leak. Link-Local (not
+# Off) keeps fe80 alive for local v6 LAN.
+v6mode=$(/usr/sbin/networksetup -getinfo "$svc" 2>/dev/null | /usr/bin/awk -F': ' '/^IPv6: / {print $2; exit}')
+v6snap="-"
+if [ "$v6mode" = "Automatic" ]; then v6snap="Automatic"; fi
+printf '%s\n%s\n%s\n%s\n' "$svc" "$cur_dns" "$cur_search" "$v6snap" > "$BACKUP.tmp" && mv "$BACKUP.tmp" "$BACKUP"
+if [ "$v6snap" = "Automatic" ]; then
+  /usr/sbin/networksetup -setv6LinkLocal "$svc" && log "ipv6 disabled on '$svc' (was Automatic)" \
+    || log "setv6LinkLocal FAILED, leak guarded by reject route only"
+else
+  log "ipv6 mode '$v6mode' left untouched"
+fi
 /usr/sbin/networksetup -setdnsservers "$svc" $dns && log "applied dns '$dns' to '$svc'" \
   || log "setdnsservers FAILED"
 if [ -n "$search" ]; then /usr/sbin/networksetup -setsearchdomains "$svc" $search; fi
-# IPv6 reject route: v6 unreachable immediately -> dual-stack apps fall
-# back to IPv4 (through the tunnel) instantly
+# IPv6 reject route (fallback layer -- see header): v6 unreachable
+# immediately -> dual-stack apps fall back to IPv4 (through the tunnel)
 /sbin/route -n add -inet6 -reject __V6BLOCK__ >/dev/null 2>&1 \
   && log "ipv6 reject route added (__V6BLOCK__)" \
   || log "ipv6 reject route add failed (exists?)"
@@ -111,9 +145,9 @@ exit 0
 
 _DOWN_TEMPLATE = r"""#!/bin/sh
 # Magic Stack -- OpenVPN DNS down-script (run as root by openvpn): restore
-# the snapshotted DNS settings and withdraw the IPv6 reject route. Doubles
-# as the crash-reconcile entry -- the app runs it via sudo when the marker
-# survived an unclean exit.
+# the snapshotted DNS settings, the IPv6 service mode and withdraw the IPv6
+# reject route. Doubles as the crash-reconcile entry -- the app runs it via
+# sudo when the marker survived an unclean exit.
 # version: __VERSION__
 # Generation guard (2026-09-28): if another openvpn instance is still
 # running, this late/orphaned down must NOT restore -- the living session
@@ -138,6 +172,11 @@ fi
 svc=$(sed -n 1p "$BACKUP")
 cur_dns=$(sed -n 2p "$BACKUP")
 cur_search=$(sed -n 3p "$BACKUP")
+# 4th line is the v6 snapshot ("Automatic" = up disabled it; "-" = untouched;
+# empty = pre-2026-09-29 backup -> nothing to restore). Unconditional restore
+# on "Automatic" is the crash-window contract: setting Automatic on an
+# already-Automatic service is a harmless no-op.
+cur_v6=$(sed -n 4p "$BACKUP")
 restore() {
   _svc="$1"; _cur="$2"; _setter="$3"
   case "$_cur" in
@@ -147,6 +186,11 @@ restore() {
 }
 restore "$svc" "$cur_dns" -setdnsservers
 restore "$svc" "$cur_search" -setsearchdomains
+case "$cur_v6" in
+  Automatic) /usr/sbin/networksetup -setv6automatic "$svc" && log "ipv6 restored to Automatic on '$svc'" \
+    || log "setv6automatic FAILED" ;;
+  *) log "ipv6 mode untouched (snapshot='$cur_v6')" ;;
+esac
 rm -f "$MARKER" "$BACKUP"
 log "restored '$svc' dns='$cur_dns'"
 exit 0
