@@ -1,10 +1,12 @@
-# Magic Stack — macOS AI Gateway, SSH Tunnels & Traffic Capture
+# Magic Stack — AI Gateway, SSH & OpenVPN for macOS
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-**Magic Stack is an open-source macOS menu bar app for routing AI coding agents, managing SSH connections, and inspecting AI API traffic.** Connect Claude Code, Codex, OpenCode and ZCode to your own model providers through a local LLM gateway. Manage an HTTP/SOCKS5 proxy, SSH port forwarding and NFS remote mounts from the same app, with English and Simplified Chinese interfaces.
+**Magic Stack is an open-source macOS menu bar app that combines a local AI gateway, an SSH proxy and an OpenVPN client.** Connect Claude Code, Codex, OpenCode and ZCode to your own model providers, access remote services and files, and inspect AI API traffic from one app. The interface supports English and Simplified Chinese.
 
-**[Download for macOS](https://github.com/benz-ai-x/magic-stack/releases/latest)** · [Quick start](#quick-start-connect-your-ai-coding-agent) · [Docker deployment](#docker-self-hosted-ai-gateway) · [FAQ](#faq)
+Use an AI assistant to configure Magic Stack through its local API, or edit settings yourself. Networking features include HTTP/SOCKS5 proxying, SSH port forwarding, NFS remote mounts, and live SSH/VPN upload and download statistics. The AI gateway also runs independently with Docker on Linux or other Docker hosts.
+
+**[Download for macOS](https://github.com/benz-ai-x/magic-stack/releases/latest)** · [Configure with AI](#configure-magic-stack-with-an-ai-assistant) · [Quick start](#quick-start-connect-your-ai-coding-agent) · [OpenVPN](#openvpn-client-for-macos) · [Docker](#docker-self-hosted-ai-gateway) · [FAQ](#faq)
 
 [![Release](https://img.shields.io/github/v/release/benz-ai-x/magic-stack)](https://github.com/benz-ai-x/magic-stack/releases)
 [![CI](https://github.com/benz-ai-x/magic-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/benz-ai-x/magic-stack/actions/workflows/ci.yml)
@@ -15,18 +17,23 @@
 
 ## What can you do with Magic Stack?
 
-Magic Stack brings together two independent products: **Suanpan (算盘)**, the AI routing gateway, and **Magic Proxy**, the SSH proxy and traffic capture tools. You can use AI routing without an SSH server, or use the networking tools without configuring any AI provider.
+Magic Stack brings together two independent products: **Suanpan (算盘)**, the local LLM routing gateway, and **Magic Proxy**, the networking tools for SSH, OpenVPN, port forwarding, NFS and TLS capture. You can use AI routing without an SSH server, or use the networking tools without configuring any AI provider.
 
 | Your workflow | Magic Stack capability |
 |---|---|
+| Describe the setup you want to an AI assistant | Copy instructions for the local configuration API; let an assistant read the guide, inspect settings, make changes and verify results |
 | Use different LLMs in your coding agents | Route requests by model prefix, explicit `provider/model` target or a default route; configure Claude Code roles separately |
 | Connect several agents to one gateway | Preview and apply settings for Claude Code, Codex, OpenCode and ZCode; agents receive a local gateway token |
 | Reach services through your own server | HTTP proxy over SSH SOCKS5, parallel SSH local port forwards, automatic retries and wake-triggered reconnects |
+| Connect a Mac to an OpenVPN network | Import a server-issued `.ovpn` profile, store password credentials in Keychain, and connect or disconnect from the app |
+| Monitor SSH or VPN network traffic | See download/upload speeds and cumulative traffic in the expanded menu, with separate SSH and VPN accounting |
 | Work with remote files on a Mac | NFSv4 mounts over SSH, remote setup assistance and automatic remounting after connection recovery |
 | Understand AI usage | Local request, token, cache and error statistics, plus provider balance and quota queries where supported |
 | Inspect AI requests and responses | Optional TLS capture with mitmproxy and local JSONL output for recognized AI API calls |
 
-Explore [agent compatibility](#ai-gateway-agent-and-protocol-compatibility), [SSH and NFS](#ssh-proxy-port-forwarding-and-nfs-mounts), [usage and capture](#ai-usage-statistics-and-traffic-capture), or [data storage](#local-ports-data-and-credentials).
+Explore [agent compatibility](#ai-gateway-agent-and-protocol-compatibility), [SSH and NFS](#ssh-proxy-port-forwarding-and-nfs-mounts), [network traffic statistics](#ssh-and-vpn-upload-and-download-statistics), [AI usage and capture](#ai-usage-statistics-and-traffic-capture), or [data storage](#local-ports-data-and-credentials).
+
+This README describes the current `main` branch. For a packaged app, check its [release notes](https://github.com/benz-ai-x/magic-stack/releases) for the features included in that build.
 
 ## Quick start: connect your AI coding agent
 
@@ -34,17 +41,30 @@ Explore [agent compatibility](#ai-gateway-agent-and-protocol-compatibility), [SS
 
 1. Download the Apple Silicon `.dmg` from [GitHub Releases](https://github.com/benz-ai-x/magic-stack/releases/latest).
 2. Drag **Magic Stack.app** into **Applications** and open it. The app lives in the menu bar. To switch to English, use **选项 → 语言 → English** in its menu.
-3. Open **Preferences → AI Router → Quick Start**. Select a provider and enter its API key.
-4. Run the endpoint probe, review the available models, and select the installed agents you want to configure. Review the configuration preview before applying it.
-5. Check the default model and any role mappings under **Claude Code Sync**, start AI routing from the menu bar if it is stopped, then restart your agent to load its new settings.
 
-You need an installed coding agent and credentials for your chosen model provider. SSH access is only needed for the networking features. Model and protocol availability depends on the provider, endpoint and account plan; the compatibility table below explains the gateway's supported paths.
-
-The setup engine writes the gateway address and a **local client token** into agent configuration. Provider API keys stay in the gateway configuration and are used to authenticate outbound requests to the selected provider.
+For AI routing, you need an installed coding agent and credentials for your chosen model provider. SSH proxying, port forwarding and NFS need an SSH server; OpenVPN needs a VPN server and client profile. These are independent of the AI gateway.
 
 ### Configure Magic Stack with an AI assistant
 
-Click **Copy AI Assistant Instructions** in settings and give the copied instructions to your assistant. They include access to the authenticated local configuration API, allowing the assistant to inspect and update app settings. The [agent API guide](docs/agent.md) documents the available operations.
+1. Open **Preferences** and click **Copy AI Assistant Instructions**. Native copying starts the configuration API and keeps it available until the app exits.
+2. Paste the instructions into an assistant with terminal access on the Mac running Magic Stack, then describe your goal. The instructions include the current guide URL, configuration API address and authentication token.
+3. Ask the assistant to read the guide and current configuration, preview coding-client changes, and verify the result after applying changes. Reopen Preferences to inspect the saved settings. Some runtime actions use the app menu, and system authorization requires your interaction.
+
+For example, after pasting the copied instructions:
+
+> Check my Claude Code provider and model routing. Read the current configuration, explain any mismatch, preview the required client changes, and verify a model request after applying the changes.
+
+The assistant needs access to this Mac: `127.0.0.1` in the instructions cannot be reached by a cloud-only web fetch. The copied token authenticates the configuration API, not the model gateway or a provider. The [agent API guide](docs/agent.md) lists supported operations, configuration paths and verification steps.
+
+### Set up coding agents in Preferences
+
+1. Open **Preferences → AI Router → Quick Start**. Select a provider and enter its API key.
+2. Run the endpoint probe, review the available models, and select the installed agents you want to configure. Review the configuration preview before applying it.
+3. Check the default model and any role mappings under **Claude Code Sync**, start AI routing from the menu bar if it is stopped, then restart your agent to load its new settings.
+
+Model and protocol availability depends on the provider, endpoint and account plan; the compatibility table below explains the gateway's supported paths.
+
+The setup engine writes the gateway address and a **local client token** into agent configuration. Provider API keys stay in the gateway configuration and are used to authenticate outbound requests to the selected provider.
 
 ## AI gateway: agent and protocol compatibility
 
@@ -102,6 +122,28 @@ curl --proxy http://127.0.0.1:8888 https://example.com
 
 ![Magic Stack SSH port forwarding: local-to-remote port mappings with individual enable switches and connection tests](assets/docs/portforwards-en-v0140.png)
 
+## OpenVPN client for macOS
+
+**Magic Stack manages OpenVPN connections on macOS using your own VPN server and `.ovpn` profile.** It supports profile import, VPN password storage in Keychain, connection status, server-pushed DNS and traffic statistics. The OpenVPN executable is installed separately; it is not bundled with the app.
+
+1. Install OpenVPN if it is not already available: `brew install openvpn`.
+2. Open **Preferences → Proxy → Servers**, add and save a server entry, then open its **OpenVPN** tab.
+3. Import the server-issued `.ovpn` profile. If password authentication is required, enter the username and use **Save to Keychain** for the password. Click **Save Changes** to persist the username and DNS settings.
+4. Click **Install to System** and complete the macOS administrator authorization, then click **Connect**. Re-run installation after changing the profile.
+
+SSH proxy access and VPN access are mutually exclusive: switching access stops the previous connection. SSH port forwards and NFS mounts have independent service sessions. Which destinations use the VPN depends on the profile and server-provided routes. Magic Stack does not provide VPN servers or subscriptions. See the [VPN coordinator](vpn/coordinator.py) and [profile handling](vpn/profile.py) for connection and import behavior.
+
+## SSH and VPN upload and download statistics
+
+After connecting SSH or OpenVPN, **expand the Magic Stack menu** to see `↓` download speed, `↑` upload speed and cumulative traffic. The menu refreshes while it stays open; the top menu bar keeps its status icon.
+
+| Connection | Traffic counted | Cumulative period |
+|---|---|---|
+| SSH proxy | Bytes forwarded through the local HTTP/HTTPS proxy; also shows active proxy connections | Since the app started |
+| OpenVPN | Tunnel bytes reported by OpenVPN; no HTTP proxy connection count | Since this VPN connection started, including automatic reconnects |
+
+SSH totals exclude direct SOCKS5 use, independent port forwards and NFS mounts. Traffic rows are hidden while access is disconnected, paused or reconnecting; VPN speed returns to zero when reports become stale. These are network byte counts, separate from the AI gateway's token usage and provider balances. See the [menu display](shellui/menu_builder.py) and [VPN counters](vpn/openvpn_client.py) for the accounting behavior.
+
 ## AI usage statistics and traffic capture
 
 ### Track tokens, cache usage and provider balances
@@ -140,7 +182,7 @@ bash docker/suanpan.sh sync --dry-run
 bash docker/suanpan.sh sync
 ```
 
-The Compose file publishes ports `9527` and `9528` on host loopback only and persists configuration in `docker/data/`. The `sync` command updates the host's `~/.claude/settings.json` through a mounted directory. Docker includes the gateway and web configuration; SSH management, NFS mounts, TLS capture and the menu bar require the macOS app. See the [Docker deployment guide](docs/docker-deploy.md) for remote access and deployment details.
+The Compose file publishes ports `9527` and `9528` on host loopback only and persists configuration in `docker/data/`. The `sync` command updates the host's `~/.claude/settings.json` through a mounted directory. Docker includes the gateway and web configuration; SSH management, OpenVPN connections, NFS mounts, TLS capture and the menu bar require the macOS app. See the [Docker deployment guide](docs/docker-deploy.md) for remote access and deployment details.
 
 ## Local ports, data and credentials
 
@@ -158,7 +200,8 @@ The macOS services bind to loopback. The configuration service on `9528` starts 
 |---|---|
 | Server, proxy and app settings | `~/.magic-proxy.json` |
 | Provider keys and routing rules | `~/.suanpan.yaml`; provider keys can also reference environment variables |
-| SSH and remote sudo passwords | macOS Keychain |
+| SSH, remote sudo and VPN passwords | macOS Keychain |
+| Imported OpenVPN profiles | `~/.magic-stack/openvpn/` |
 | Gateway usage metadata | `~/.suanpan/logs/usage.jsonl` |
 | Captured AI request/response content | `~/.magic-proxy-captures/` |
 
@@ -184,7 +227,15 @@ Magic Stack routes requests; it does not run model inference. You can configure 
 
 ### Is Magic Stack a VPN client?
 
-Magic Stack provides HTTP/SOCKS5 proxying and SSH port forwarding. Applications must use the proxy or forwarded ports. The OpenVPN tab currently provides service detection and a placeholder; it does not manage VPN connections.
+Yes. The macOS app includes an OpenVPN client as well as an SSH proxy. Import your server's `.ovpn` profile and install the local OpenVPN executable to connect. SSH proxy access and VPN access cannot run together, while port forwarding and NFS remain independently managed. Follow the [OpenVPN setup steps](#openvpn-client-for-macos).
+
+### Can an AI assistant configure Magic Stack for me?
+
+Yes, if it can run terminal commands on the host running Magic Stack. **Copy AI Assistant Instructions** supplies the guide and authenticated configuration API entry point. An assistant can inspect settings, configure providers and servers, and use the API operations documented in the guide. Some service actions and administrator authorization still require the local UI. See [AI-assisted setup](#configure-magic-stack-with-an-ai-assistant).
+
+### Does the SSH traffic display measure all Mac network traffic?
+
+No. It measures traffic through Magic Stack's local HTTP/HTTPS proxy, excluding direct SOCKS5 use, independent port forwards and NFS. VPN statistics measure the OpenVPN tunnel separately. See the [traffic accounting table](#ssh-and-vpn-upload-and-download-statistics).
 
 ### Is Magic Stack free, and does it include model access?
 

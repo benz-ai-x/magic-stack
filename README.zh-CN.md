@@ -1,10 +1,12 @@
-# Magic Stack — macOS AI 网关、SSH 隧道与 AI 流量抓包工具
+# Magic Stack — macOS AI 网关、SSH 代理与 OpenVPN 客户端
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-**Magic Stack 是开源的 macOS 菜单栏应用，用于 AI 编程工具接入、多模型路由、SSH 连接管理和 AI API 流量检查。** 通过本地大模型网关，把 Claude Code、Codex、OpenCode、ZCode 接到你自己的模型供应商；在同一个应用中管理 HTTP/SOCKS5 代理、SSH 端口转发和 NFS 远程挂载。界面支持简体中文与英文。
+**Magic Stack 是开源的 macOS 菜单栏应用，集成本地 AI 网关、SSH 代理与 OpenVPN 客户端。** 在同一个应用中，把 Claude Code、Codex、OpenCode、ZCode 接到你自己的模型供应商，访问远程服务和文件，并检查 AI API 流量。界面支持简体中文与英文。
 
-**[下载 macOS 版](https://github.com/benz-ai-x/magic-stack/releases/latest)** · [快速开始](#快速开始接入你的-ai-编程工具) · [Docker 部署](#docker自托管-ai-网关) · [常见问题](#常见问题)
+你可以让 AI 助手通过本地 API 完成配置，也可以手动编辑设置。网络功能包括 HTTP/SOCKS5 代理、SSH 端口转发、NFS 远程挂载，以及 SSH/VPN 上传下载速度与累计流量。AI 网关也可独立部署在 Linux 或其他 Docker 宿主机上。
+
+**[下载 macOS 版](https://github.com/benz-ai-x/magic-stack/releases/latest)** · [让 AI 帮你配置](#让-ai-助手帮你配置-magic-stack) · [快速开始](#快速开始接入你的-ai-编程工具) · [OpenVPN](#macos-openvpn-客户端) · [Docker](#docker自托管-ai-网关) · [常见问题](#常见问题)
 
 [![Release](https://img.shields.io/github/v/release/benz-ai-x/magic-stack)](https://github.com/benz-ai-x/magic-stack/releases)
 [![CI](https://github.com/benz-ai-x/magic-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/benz-ai-x/magic-stack/actions/workflows/ci.yml)
@@ -15,18 +17,23 @@
 
 ## Magic Stack 能做什么？
 
-Magic Stack 承载两个可独立使用的产品：**Suanpan（算盘）** 负责 AI 路由网关，**Magic Proxy** 负责 SSH 代理与流量抓包。不配置 SSH 服务器也能使用 AI 路由；不接入模型供应商，也能使用代理、端口映射和远程挂载。
+Magic Stack 承载两个可独立使用的产品：**Suanpan（算盘）** 是本地大模型路由网关，**Magic Proxy** 负责 SSH、OpenVPN、端口映射、NFS 和 TLS 抓包。不配置 SSH 服务器也能使用 AI 路由；不接入模型供应商，也能使用网络工具。
 
 | 你的使用场景 | Magic Stack 提供的能力 |
 |---|---|
+| 用自然语言告诉 AI 你想怎样配置 | 复制本地配置 API 指令，让助手读指南、检查设置、修改配置并验证结果 |
 | 在 AI 编程工具中切换不同大模型 | 按模型前缀、显式 `provider/model` 或默认路由选择后端，并单独配置 Claude Code 角色映射 |
 | 让多个 Agent 共用一个网关 | 预览并写入 Claude Code、Codex、OpenCode、ZCode 配置，Agent 使用本地网关 token |
 | 经自己的服务器访问远程服务 | HTTP → SSH SOCKS5 代理、多服务器并行端口转发、自动重试与唤醒重连 |
+| 让 Mac 接入 OpenVPN 网络 | 导入服务端提供的 `.ovpn` 配置，将密码凭证存入钥匙串，在应用内连接或断开 |
+| 查看 SSH 或 VPN 网络流量 | 在展开菜单中查看上传下载速度与累计流量，区分 SSH 和 VPN 的统计口径 |
 | 在 Mac 上使用远程文件 | 通过 SSH 隧道挂载 NFSv4，辅助安装远程服务，连接恢复后自动重挂 |
 | 了解 AI 调用与用量 | 本地请求数、token、缓存、错误统计，以及受支持供应商的余额与配额查询 |
 | 查看 AI 请求和响应 | 可选的 mitmproxy TLS 抓包，将识别到的 AI API 调用保存为本地 JSONL |
 
-查看[Agent 兼容性](#ai-网关agent-与协议兼容性)、[SSH 与 NFS](#ssh-代理端口转发与-nfs-远程挂载)、[用量与抓包](#ai-用量统计与流量抓包)，或[数据存放方式](#本地端口数据与凭证)。
+查看 [Agent 兼容性](#ai-网关agent-与协议兼容性)、[SSH 与 NFS](#ssh-代理端口转发与-nfs-远程挂载)、[网络流量统计](#sshvpn-上传下载速度与累计流量)、[AI 用量与抓包](#ai-用量统计与流量抓包)，或[数据存放方式](#本地端口数据与凭证)。
+
+本 README 描述当前 `main` 分支。使用已打包的应用时，请以对应[发行说明](https://github.com/benz-ai-x/magic-stack/releases)中的功能范围为准。
 
 ## 快速开始：接入你的 AI 编程工具
 
@@ -34,17 +41,30 @@ Magic Stack 承载两个可独立使用的产品：**Suanpan（算盘）** 负�
 
 1. 从 [GitHub Releases](https://github.com/benz-ai-x/magic-stack/releases/latest) 下载 Apple Silicon 版 `.dmg`。
 2. 将 **Magic Stack.app** 拖入「应用程序」并打开，应用入口位于菜单栏。
-3. 打开 **偏好设置 → AI 路由 → 快速接入**，选择供应商，填写该供应商的 API Key。
-4. 执行端点探测，查看可用模型，勾选需要配置的已安装 Agent；确认配置预览后应用。
-5. 在 **Claude Code 同步**页检查默认模型及角色映射；如果 AI 路由尚未启动，从菜单栏启动，然后重新启动 Agent 使新配置生效。
 
-接入 AI 路由需要已安装的编程 Agent 和所选供应商的凭证。只有网络功能需要 SSH 服务器。可用模型和协议取决于供应商、端点及账户套餐，网关支持的转发路径见下方兼容性表。
-
-自动配置会把网关地址和**本地客户端 token** 写入 Agent 配置。供应商 API Key 保存在网关配置中，由网关在向所选供应商发起请求时用于认证。
+接入 AI 路由需要已安装的编程 Agent 和所选供应商的凭证。SSH 代理、端口转发和 NFS 需要 SSH 服务器；OpenVPN 需要 VPN 服务端和客户端配置文件。这些网络条件独立于 AI 网关。
 
 ### 让 AI 助手帮你配置 Magic Stack
 
-点击设置页的 **复制 AI 助手指令**，把复制的内容交给助手。指令包含经过认证的本地配置 API 访问方式，助手可以据此读取和修改应用设置。支持的操作见 [Agent API 文档](docs/agent.md)。
+1. 打开 **偏好设置**，点击 **复制 AI 助手指令**。原生复制会启动配置 API，并让它保持可用直到应用退出。
+2. 将指令粘贴给能在这台 Mac 上执行终端命令的 AI 助手，再说明你的目标。指令包含当前操作指南地址、配置 API 地址和认证 token。
+3. 让助手先读指南和当前配置，预览编程客户端的变更，并在应用变更后验证结果。重新打开偏好设置，检查已保存的配置。部分服务操作需要使用应用菜单，系统授权需要你在本机完成。
+
+例如，粘贴指令后可以这样提出需求：
+
+> 检查我的 Claude Code 供应商和模型路由。先读取当前配置，说明不一致之处，预览需要修改的客户端配置，应用后再验证一次模型请求。
+
+助手需要访问这台 Mac：云端网页抓取工具无法访问指令中的本机 `127.0.0.1`。复制的 token 用于配置 API，不是模型网关或供应商密钥。[Agent API 文档](docs/agent.md)列出了支持的操作、配置路径和验证步骤。
+
+### 在偏好设置中接入编程工具
+
+1. 打开 **偏好设置 → AI 路由 → 快速接入**，选择供应商，填写该供应商的 API Key。
+2. 执行端点探测，查看可用模型，勾选需要配置的已安装 Agent；确认配置预览后应用。
+3. 在 **Claude Code 同步**页检查默认模型及角色映射；如果 AI 路由尚未启动，从菜单栏启动，然后重新启动 Agent 使新配置生效。
+
+可用模型和协议取决于供应商、端点及账户套餐，网关支持的转发路径见下方兼容性表。
+
+自动配置会把网关地址和**本地客户端 token** 写入 Agent 配置。供应商 API Key 保存在网关配置中，由网关在向所选供应商发起请求时用于认证。
 
 ## AI 网关：Agent 与协议兼容性
 
@@ -104,6 +124,28 @@ curl --proxy http://127.0.0.1:8888 https://example.com
 
 ![Magic Stack NFS 远程挂载：通过 SSH 隧道配置远程目录与本地挂载点](assets/docs/nfs-zh-v0140.png)
 
+## macOS OpenVPN 客户端
+
+**Magic Stack 使用你自己的 VPN 服务端和 `.ovpn` 配置，在 macOS 上管理 OpenVPN 连接。** 支持导入配置、将 VPN 密码存入钥匙串、查看连接状态、应用服务端 DNS 和统计流量。OpenVPN 可执行程序需要单独安装，应用不内置该程序。
+
+1. 如果尚未安装 OpenVPN，执行 `brew install openvpn`。
+2. 打开 **偏好设置 → 代理 → 服务器**，添加并保存服务器条目，然后进入它的 **OpenVPN** 标签页。
+3. 导入服务端提供的 `.ovpn` 文件。如果需要密码认证，填写用户名，并将密码**存入钥匙串**。点击**保存更改**，保存用户名和 DNS 设置。
+4. 点击 **安装到系统**，完成 macOS 管理员授权，再点击 **连接**。修改 profile 后需要重新安装到系统。
+
+SSH 代理接入与 VPN 接入互斥，切换时会停止前一种接入；SSH 端口映射与 NFS 挂载使用独立的服务会话。哪些目标流量经过 VPN，由 profile 和服务端下发的路由决定。Magic Stack 不提供 VPN 服务器或订阅。连接和导入行为见 [VPN 协调器](vpn/coordinator.py)与 [profile 处理](vpn/profile.py)。
+
+## SSH/VPN 上传下载速度与累计流量
+
+SSH 或 OpenVPN 连接成功后，**展开 Magic Stack 菜单**即可查看 `↓` 下载速度、`↑` 上传速度和累计流量。菜单保持展开时持续刷新，顶部菜单栏保留状态图标。
+
+| 接入方式 | 统计范围 | 累计周期 |
+|---|---|---|
+| SSH 代理 | 经本地 HTTP/HTTPS 代理转发的字节，同时显示活跃代理连接数 | 自本次应用启动以来 |
+| OpenVPN | OpenVPN 上报的隧道字节，不显示 HTTP 代理连接数 | 自本次 VPN 连接启动以来，包含自动重连 |
+
+SSH 累计量不包含直连 SOCKS5、独立端口映射和 NFS 挂载。断开、暂停或重连时隐藏流量行；VPN 上报过期后速率归零。这些数值统计网络字节，与 AI 网关的 token 用量和供应商余额分开。具体口径见[菜单显示](shellui/menu_builder.py)与 [VPN 计数](vpn/openvpn_client.py)。
+
 ## AI 用量统计与流量抓包
 
 ### 查看 token、缓存命中与供应商余额
@@ -142,7 +184,7 @@ bash docker/suanpan.sh sync --dry-run
 bash docker/suanpan.sh sync
 ```
 
-Compose 默认只向宿主机回环地址映射 `9527`、`9528`，配置持久化在 `docker/data/`。`sync` 命令通过挂载目录更新宿主机的 `~/.claude/settings.json`。Docker 包含网关和 Web 配置；SSH 管理、NFS 挂载、TLS 抓包及菜单栏需要 macOS 应用。远程访问与部署细节见 [Docker 部署文档](docs/docker-deploy.md)。
+Compose 默认只向宿主机回环地址映射 `9527`、`9528`，配置持久化在 `docker/data/`。`sync` 命令通过挂载目录更新宿主机的 `~/.claude/settings.json`。Docker 包含网关和 Web 配置；SSH 管理、OpenVPN 连接、NFS 挂载、TLS 抓包及菜单栏需要 macOS 应用。远程访问与部署细节见 [Docker 部署文档](docs/docker-deploy.md)。
 
 ## 本地端口、数据与凭证
 
@@ -160,7 +202,8 @@ macOS 侧服务绑定回环地址。`9528` 配置服务在设置窗打开时启�
 |---|---|
 | 服务器、代理与应用设置 | `~/.magic-proxy.json` |
 | 供应商密钥与路由规则 | `~/.suanpan.yaml`；供应商密钥也可引用环境变量 |
-| SSH 与远端 sudo 密码 | macOS 钥匙串 |
+| SSH、远端 sudo 和 VPN 密码 | macOS 钥匙串 |
+| 导入的 OpenVPN profile | `~/.magic-stack/openvpn/` |
 | 网关用量元数据 | `~/.suanpan/logs/usage.jsonl` |
 | AI 请求/响应抓包内容 | `~/.magic-proxy-captures/` |
 
@@ -186,7 +229,15 @@ Magic Stack 负责请求路由，不执行模型推理。如果本地或自托�
 
 ### Magic Stack 是 VPN 客户端吗？
 
-Magic Stack 提供 HTTP/SOCKS5 代理和 SSH 端口转发，应用需要使用对应代理或映射端口。OpenVPN 标签页目前只有服务检测和占位入口，尚不管理 VPN 连接。
+是。macOS 应用同时提供 OpenVPN 客户端和 SSH 代理。导入服务端的 `.ovpn` 配置并安装本机 OpenVPN 程序后，即可连接。SSH 代理接入与 VPN 接入不能同时运行，端口映射和 NFS 则独立管理。操作步骤见 [OpenVPN 配置](#macos-openvpn-客户端)。
+
+### AI 助手可以帮我配置 Magic Stack 吗？
+
+可以，前提是助手能在运行 Magic Stack 的主机上执行终端命令。**复制 AI 助手指令**会提供操作指南和经过认证的配置 API 入口。助手可以读取设置、配置供应商和服务器，并调用指南中列出的 API。部分服务操作和管理员授权仍需在本机界面完成。详见[让 AI 帮你配置](#让-ai-助手帮你配置-magic-stack)。
+
+### SSH 流量显示统计的是整台 Mac 的网络流量吗？
+
+不是。它只统计经过 Magic Stack 本地 HTTP/HTTPS 代理的流量，不包含直连 SOCKS5、独立端口映射和 NFS。VPN 使用独立的 OpenVPN 隧道统计，详见[流量统计口径](#sshvpn-上传下载速度与累计流量)。
 
 ### Magic Stack 免费吗？是否包含模型额度？
 
