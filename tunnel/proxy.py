@@ -226,6 +226,21 @@ async def handle_connect(client_reader, client_writer, host, port, socks_addr, s
         stats.dec_connections()
 
 
+class _TrafficWriter:
+    """Count forwarded HTTP bytes at the same write boundary as CONNECT."""
+
+    def __init__(self, writer, record):
+        self._writer = writer
+        self._record = record
+
+    def write(self, data):
+        self._writer.write(data)
+        self._record(len(data))
+
+    async def drain(self):
+        await self._writer.drain()
+
+
 async def handle_http(client_reader, client_writer, request_line, socks_addr, stats):
     """明文 HTTP 逐请求归属状态机（issue #5）。
 
@@ -312,7 +327,8 @@ async def handle_http(client_reader, client_writer, request_line, socks_addr, st
                     await client_writer.drain()
                     break
                 remote = http_framer.Upstream(rr, rw, (host, port))
-            rr, rw = remote.reader, remote.writer
+            rr = remote.reader
+            rw = _TrafficWriter(remote.writer, stats.record_up)
 
             rw.write(f"{method} {path} {version}".encode("latin-1") + b"\r\n")
             for raw in forwarded:
@@ -332,7 +348,8 @@ async def handle_http(client_reader, client_writer, request_line, socks_addr, st
             except (ConnectionError, ValueError):
                 break
 
-            keep = await _relay_one_response(rr, client_writer, method)
+            keep = await _relay_one_response(
+                rr, _TrafficWriter(client_writer, stats.record_down), method)
             if not keep or req_close or body_indeterminate:
                 break
             line = None  # 后续请求从 reader 自然续读（pipelined 字节天然缓冲）

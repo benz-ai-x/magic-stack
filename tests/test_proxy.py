@@ -45,6 +45,42 @@ def _reader(data=b""):
 
 
 class TestHttpForwarding(unittest.IsolatedAsyncioTestCase):
+    async def test_counts_forwarded_http_bytes_for_all_body_framings(self):
+        for headers, body in (
+            (b"Content-Length: 4\r\n", b"data"),
+            (b"Transfer-Encoding: chunked\r\n", b"4\r\ndata\r\n0\r\n\r\n"),
+            (b"", b"data"),
+        ):
+            with self.subTest(headers=headers):
+                request_head = (b"Host: example.com\r\nContent-Length: 6\r\n"
+                                b"Connection: close\r\n"
+                                b"Proxy-Authorization: Basic secret\r\n\r\n")
+                response = b"HTTP/1.1 200 OK\r\n" + headers + b"\r\n" + body
+                client_writer, remote_writer = _Writer(), _Writer()
+                stats = proxy.Stats()
+                with patch.object(proxy, "socks5_connect", new=AsyncMock(
+                        return_value=(_reader(response), remote_writer))):
+                    await proxy.handle_http(
+                        _reader(request_head + b"upload"), client_writer,
+                        b"POST http://example.com/path HTTP/1.1\r\n",
+                        "127.0.0.1:1080", stats)
+                snap = stats.snapshot()
+                self.assertEqual(snap["total_down"], len(response))
+                self.assertEqual(snap["total_up"], len(remote_writer.data))
+                self.assertGreater(snap["total_up"], 6)
+                self.assertEqual(snap["active_connections"], 0)
+
+    async def test_local_http_failure_is_not_tunnel_traffic(self):
+        stats = proxy.Stats()
+        with patch.object(proxy, "socks5_connect", new=AsyncMock(
+                side_effect=OSError("unreachable"))):
+            await proxy.handle_http(
+                _reader(b"Host: example.com\r\n\r\n"), _Writer(),
+                b"GET http://example.com/ HTTP/1.1\r\n",
+                "127.0.0.1:1080", stats)
+        self.assertEqual(stats.snapshot()["total_up"], 0)
+        self.assertEqual(stats.snapshot()["total_down"], 0)
+
     async def test_does_not_forward_proxy_credentials(self):
         client_reader = _reader(
             b"Host: example.com\r\n"

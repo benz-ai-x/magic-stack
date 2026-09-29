@@ -4,6 +4,7 @@
 崩溃翻译用 poll() 恒非零的假进程对象驱动基类 check() 路径。
 """
 import unittest
+from unittest.mock import patch
 
 from vpn.openvpn_client import (
     ERR_AUTH_CHALLENGE,
@@ -154,6 +155,61 @@ class TestCredentials(unittest.TestCase):
 
 
 class TestBytecount(unittest.TestCase):
+    def test_reconnect_state_preserves_totals_and_clears_old_speed(self):
+        client, _, _ = _client()
+        client.vpn.status = "connected"
+        with patch("vpn.openvpn_client.time.monotonic", return_value=10) as clock:
+            client._on_bytecount((100, 200))
+            clock.return_value = 11
+            client._on_bytecount((1100, 2200))
+            client._on_state({"name": "RECONNECTING"})
+            self.assertEqual(client.traffic_snapshot(), {
+                "bytes_in": 1100, "bytes_out": 2200, "rate_in": 0, "rate_out": 0})
+            client._on_state({"name": "CONNECTED", "desc": "SUCCESS"})
+            self.assertEqual(client.traffic_snapshot()["rate_in"], 0)
+
+    def test_rates_expire_when_reports_stop_and_total_is_retained(self):
+        client, _, _ = _client()
+        client.vpn.status = "connected"
+        with patch("vpn.openvpn_client.time.monotonic", return_value=10) as clock:
+            client._on_bytecount((100, 200))
+            clock.return_value = 11
+            client._on_bytecount((2148, 712))
+            snap = client.traffic_snapshot()
+            self.assertEqual((snap["rate_in"], snap["rate_out"]), (2048, 512))
+            clock.return_value = 20
+            snap = client.traffic_snapshot()
+            self.assertEqual((snap["rate_in"], snap["rate_out"]), (0, 0))
+            self.assertEqual((snap["bytes_in"], snap["bytes_out"]), (2148, 712))
+
+    def test_counter_reset_starts_new_rate_window(self):
+        client, _, _ = _client()
+        client.vpn.status = "connected"
+        with patch("vpn.openvpn_client.time.monotonic", return_value=10) as clock:
+            client._on_bytecount((100, 200))
+            clock.return_value = 11
+            client._on_bytecount((1100, 2200))
+            clock.return_value = 12
+            client._on_bytecount((10, 20))
+            snap = client.traffic_snapshot()
+            self.assertEqual((snap["bytes_in"], snap["bytes_out"]), (1110, 2220))
+            self.assertEqual((snap["rate_in"], snap["rate_out"]), (0, 0))
+            clock.return_value = 13
+            client._on_bytecount((110, 220))
+            snap = client.traffic_snapshot()
+            self.assertEqual((snap["rate_in"], snap["rate_out"]), (100, 200))
+
+    def test_rate_is_zero_when_connection_is_not_ready(self):
+        client, _, _ = _client()
+        with patch("vpn.openvpn_client.time.monotonic", return_value=10) as clock:
+            client._on_bytecount((100, 200))
+            clock.return_value = 11
+            client._on_bytecount((1100, 2200))
+            for status in ("reconnecting", "stopped", "error"):
+                client.vpn.status = status
+                snap = client.traffic_snapshot()
+                self.assertEqual((snap["rate_in"], snap["rate_out"]), (0, 0))
+
     def test_counter_reset_folds_into_base(self):
         client, _, _ = _client()
         client._on_bytecount((100, 200))

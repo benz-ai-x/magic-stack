@@ -320,6 +320,47 @@ class TestOnTickIdle(unittest.TestCase):
         args, _ = a._lifecycle.sync_sleep.call_args
         self.assertEqual(args[0], "connected")
 
+    def test_tick_keeps_firing_while_menu_tracks_events(self):
+        from AppKit import NSApplication, NSEventTrackingRunLoopMode
+        from Foundation import NSDate, NSRunLoop
+        NSApplication.sharedApplication()
+        a = _make_app()
+        a._on_tick = MagicMock()
+        a._start_tick_timer()
+        try:
+            deadline = NSDate.dateWithTimeIntervalSinceNow_(0.25)
+            while not a._on_tick.called and deadline.timeIntervalSinceNow() > 0:
+                NSRunLoop.currentRunLoop().runMode_beforeDate_(
+                    NSEventTrackingRunLoopMode, deadline)
+            self.assertTrue(a._on_tick.called,
+                            "Traffic must keep refreshing while the menu is open")
+        finally:
+            a._tick_timer.stop()
+
+    def test_vpn_counters_reach_menu_state_from_management_events(self):
+        from shared.stats import Stats
+        from vpn.coordinator import VpnCoordinator
+        from vpn.openvpn_client import VpnClient
+        a = _make_app()
+        a._stats = Stats()
+        a._stats.record_down(999999)
+        a._vpn = VpnCoordinator(
+            get_config=lambda: {}, switch_access=lambda: None,
+            on_established=lambda: None, notify=lambda *args: None,
+            mark_dirty=lambda: None)
+        client = VpnClient(full_cmd=[], mgmt_port=17511)
+        a._vpn._client = client
+        client._on_state({"name": "CONNECTED", "desc": "SUCCESS"})
+        with patch("vpn.openvpn_client.time.monotonic", return_value=10) as clock:
+            client._on_bytecount((100, 200))
+            clock.return_value = 11
+            client._on_bytecount((1124, 712))
+            state = a._make_menu_state()
+        self.assertEqual(state.vpn_status, "connected")
+        self.assertEqual(state.vpn_stats_snapshot, {
+            "rate_down": 1024, "rate_up": 512,
+            "total_down": 1124, "total_up": 712})
+
 
 class TestSuanpanActions(unittest.TestCase):
     """toggle/reload/restart 现在内联在 app.py 里，直接调用

@@ -13,7 +13,7 @@ M2 接线时连接序列住进了 app.py（~200 行域逻辑 + 错误码表 + �
   互斥，与唤醒触发的根本差异）
 - 错误码 → i18n 键两张表（域内零文案纪律：表存键名，取词经 i18n.t）
 - 启动收养（残留 root openvpn 清场）
-- snapshot / 菜单四字段投影（app 不再 getattr 捅 VpnClient 内部）
+- snapshot / 菜单状态与流量投影（app 不再 getattr 捅 VpnClient 内部）
 
 依赖全注入（vpn 域不横向 import tunnel/services——分层 DAG 只向下）：
 conn 的 stop_access、系统代理/防睡眠收敛、服务层重建、通知、dirty 各
@@ -74,11 +74,12 @@ def install_error_key(code: str) -> str:
 
 
 class MenuVpn(NamedTuple):
-    """MenuState 的 VPN 四字段（app 只搬运不推导）。"""
+    """MenuState 的 VPN 状态与统一流量口径（app 只搬运不推导）。"""
     status: str
     server_name: str
     error_kind: str
     tun_ip: str
+    stats_snapshot: dict | None = None
 
 
 class VpnCoordinator:
@@ -223,15 +224,22 @@ class VpnCoordinator:
         return None
 
     def menu_vpn(self) -> MenuVpn:
-        """MenuState 的 VPN 四字段单一投影（收口原三段式 getattr 链）。"""
+        """菜单投影：VPN 的 in/out 在此归一为下载/上传。"""
         c = self._client
         st = c.vpn if c is not None else None
         server = self.configured_server()
+        traffic = c.traffic_snapshot() if c is not None else None
         return MenuVpn(
             status=st.status if st is not None else "idle",
             server_name=(server or {}).get("name") or "",
             error_kind=st.error_kind if st is not None else "",
             tun_ip=st.tun_ip if st is not None else "",
+            stats_snapshot={
+                "rate_down": traffic["rate_in"],
+                "rate_up": traffic["rate_out"],
+                "total_down": traffic["bytes_in"],
+                "total_up": traffic["bytes_out"],
+            } if traffic is not None else None,
         )
 
     # ── 同步前置 / 安装（HTTP 入口与连接序列共用）──────────

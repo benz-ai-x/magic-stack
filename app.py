@@ -9,7 +9,7 @@ import threading
 import time
 
 from AppKit import NSApplication, NSMenu, NSMenuItem, NSApplicationWillTerminateNotification
-from Foundation import NSObject, NSNotificationCenter
+from Foundation import NSObject, NSNotificationCenter, NSRunLoop, NSRunLoopCommonModes
 import rumps
 
 from capture import ca_trust
@@ -44,19 +44,20 @@ from util import build_stamp, version_display, resource_path
 
 LOG_DIR = os.path.expanduser("~/Library/Logs")
 LOG_PATH = os.path.join(LOG_DIR, "MagicProxy.log")
-VERSION = "0.15.0"
+VERSION = "0.16.0"
 VERSION_DISPLAY = version_display(VERSION, build_stamp())
 
 log_buffer = LogBuffer()
 
 
 def _menu_vpn_fields(a) -> dict:
-    """MenuState 的 VPN 四字段经协调器单投影（半构造替身兜底 idle）。"""
+    """MenuState 的 VPN 状态与流量经协调器单投影。"""
     vpn = getattr(a, "_vpn", None)
     mv = vpn.menu_vpn() if vpn is not None else MenuVpn(
         status="idle", server_name="", error_kind="", tun_ip="")
     return {"vpn_status": mv.status, "vpn_server": mv.server_name,
-            "vpn_error": mv.error_kind, "vpn_tun_ip": mv.tun_ip}
+            "vpn_error": mv.error_kind, "vpn_tun_ip": mv.tun_ip,
+            "vpn_stats_snapshot": mv.stats_snapshot}
 
 
 def _thread_excepthook(args):
@@ -303,9 +304,17 @@ class MagicProxyApp(rumps.App):
             self._terminate_observer, "onTerminate:",
             NSApplicationWillTerminateNotification, None)
 
-        rumps.Timer(self._on_tick, 1).start()
+        self._start_tick_timer()
 
     # ── helpers ──────────────────────────────────────────
+
+    def _start_tick_timer(self):
+        # rumps 默认只注册 default mode，展开菜单进入 tracking mode 后
+        # 会停拍。加入 common modes，菜单打开期间仍逐秒采样并就地刷新。
+        self._tick_timer = rumps.Timer(self._on_tick, 1)
+        self._tick_timer.start()
+        NSRunLoop.currentRunLoop().addTimer_forMode_(
+            self._tick_timer._nstimer, NSRunLoopCommonModes)
 
     @staticmethod
     def _install_edit_menu():

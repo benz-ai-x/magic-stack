@@ -36,6 +36,77 @@ class TestStructKey(unittest.TestCase):
         ).struct_key()
         self.assertEqual(key_idle, key_busy)
 
+    def test_vpn_traffic_does_not_rebuild_menu(self):
+        def key(down):
+            return MenuBuilder(MagicMock(), lambda: _state(
+                vpn_status="connected", vpn_stats_snapshot={
+                    "rate_down": down, "rate_up": 500,
+                    "total_down": down * 10, "total_up": 1000})).struct_key()
+        self.assertEqual(key(0), key(2048))
+
+
+class TestTrafficDisplay(unittest.TestCase):
+    def _build(self, st):
+        mb = MenuBuilder(MagicMock(), lambda: st)
+        mb._build_header()
+        mb.refresh_titles()
+        return mb
+
+    def test_ssh_rates_totals_and_in_place_refresh(self):
+        snap = {"rate_down": 2048, "rate_up": 512, "total_down": 1048576,
+                "total_up": 4096, "active_connections": 2}
+        mb = self._build(_state(ssh_status="connected", stats_snapshot=snap))
+        row = mb.refs["traffic"]
+        self.assertEqual(row.title, "SSH · ↓ 2.0 KB/s  ·  ↑ 512 B/s  ·  2 连接")
+        self.assertEqual(mb.refs["traffic_total"].title,
+                         "本次运行累计 · ↓ 1.0 MB  ·  ↑ 4.0 KB")
+        self.assertIn("HTTP/HTTPS", row._menuitem.toolTip())
+        snap.update(rate_down=0, rate_up=0)
+        mb.refresh_titles()
+        self.assertIs(row, mb.refs["traffic"])
+        self.assertEqual(row.title, "SSH · ↓ 0 B/s  ·  ↑ 0 B/s  ·  2 连接")
+        self.assertIn("1.0 MB", mb.refs["traffic_total"].title)
+
+    def test_vpn_uses_own_counters_without_proxy_connection_count(self):
+        mb = self._build(_state(
+            vpn_status="connected",
+            stats_snapshot={"rate_down": 9999, "active_connections": 99},
+            vpn_stats_snapshot={"rate_down": 4096, "rate_up": 1024,
+                                "total_down": 8192, "total_up": 2048}))
+        self.assertEqual(mb.refs["traffic"].title, "VPN · ↓ 4.0 KB/s  ·  ↑ 1.0 KB/s")
+        self.assertEqual(mb.refs["traffic_total"].title,
+                         "本次连接累计 · ↓ 8.0 KB  ·  ↑ 2.0 KB")
+
+    def test_no_traffic_while_disconnected_paused_or_reconnecting(self):
+        for state in (_state(), _state(ssh_status="connected", paused=True),
+                      _state(vpn_status="reconnecting"),
+                      _state(vpn_status="error")):
+            with self.subTest(state=state):
+                mb = self._build(state)
+                self.assertNotIn("traffic", mb.refs)
+                self.assertNotIn("traffic_total", mb.refs)
+
+    def test_vpn_waiting_for_first_counter_shows_zero(self):
+        mb = self._build(_state(vpn_status="connected"))
+        self.assertEqual(mb.refs["traffic"].title, "VPN · ↓ 0 B/s  ·  ↑ 0 B/s")
+
+    def test_large_cumulative_traffic_uses_correct_terabyte_scale(self):
+        mb = self._build(_state(vpn_status="connected", vpn_stats_snapshot={
+            "total_down": 1024 ** 4, "total_up": 2 * 1024 ** 3}))
+        self.assertEqual(mb.refs["traffic_total"].title,
+                         "本次连接累计 · ↓ 1.00 TB  ·  ↑ 2.00 GB")
+
+    def test_english_totals(self):
+        from shared import i18n
+        previous = i18n.language()
+        try:
+            i18n.set_language("en")
+            mb = self._build(_state(vpn_status="connected"))
+            self.assertEqual(mb.refs["traffic_total"].title,
+                             "Connection total · ↓ 0 B  ·  ↑ 0 B")
+        finally:
+            i18n.set_language(previous)
+
 
 class TestStateGrammar(unittest.TestCase):
     """状态语法矩阵：A 类运行物（标题=动作，状态点=现状）与 B 类设置
@@ -102,7 +173,7 @@ class TestStateGrammar(unittest.TestCase):
 
     def test_header_traffic_line_connected_only(self):
         """状态段（行即开关定稿）：常态零行——接入行圆点已承载状态；
-        仅 SSH 已连接时出现流量行。"""
+        SSH 已连接时出现流量行，空闲时隐藏。"""
         mb = self._build(_state(
             ssh_status="connected", config=self._cfg()))
         self.assertIn("traffic", mb.refs)

@@ -61,12 +61,11 @@ def _menubar_color(ssh_status, paused, vpn_status):
 def _human(n, suffix="B"):
     if n < 1024:
         return f"{int(n)} {suffix}"
-    for unit in ("K", "M", "G"):
+    for unit in ("K", "M", "G", "T"):
         n /= 1024
-        if n < 1024:
-            decimals = 2 if unit == "G" else 1
+        if n < 1024 or unit == "T":
+            decimals = 2 if unit in ("G", "T") else 1
             return f"{n:.{decimals}f} {unit}{suffix}"
-    return f"{n:.2f} T{suffix}"
 
 
 # ── SF Symbols 图标体系（macOS 11+；旧系统/未知符号静默降级纯文本）──
@@ -274,6 +273,18 @@ class MenuState:
     vpn_server: str = ""
     vpn_error: str = ""
     vpn_tun_ip: str = ""
+    vpn_stats_snapshot: dict | None = None
+
+
+def _access_traffic(st):
+    """Only the active access supplies traffic; service sessions stay separate."""
+    if st.vpn_status == "connected":
+        return "VPN", st.vpn_stats_snapshot or {}
+    if is_in_flight_status(st.vpn_status):
+        return None
+    if st.ssh_status == "connected" and not st.paused:
+        return "SSH", st.stats_snapshot
+    return None
 
 
 # ── builder ──────────────────────────────────────────────────────
@@ -393,20 +404,22 @@ class MenuBuilder:
 
     def _build_header(self):
         """状态段（行即开关定稿）：常态零行——接入行圆点已回答「连没
-        连」，菜单栏图标同语义；只有活跃期才有内容：流量行（SSH 已
-        连接）、连接日志尾行、异常详情行。返回是否加了行。"""
+        连」，菜单栏图标同语义；只有活跃期才有内容：流量行（SSH/VPN
+        已连接）、连接日志尾行、异常详情行。返回是否加了行。"""
         app = self._app
         st = self._get_state()
         refs = self.refs
         s = st.ssh_status
         added = False
 
-        # Traffic line (SSH connected only) —— 接入行之外的唯一增量信息
-        if s == "connected" and not st.paused:
+        # 接入流量：速率与累计分行，VPN 不借用 HTTP 代理连接数。
+        if _access_traffic(st) is not None:
             refs["traffic"] = rumps.MenuItem("__traffic__", callback=None)
             _apply_icon(refs["traffic"], "updown", point_size=10,
                         color=_status_color("idle"))
             app.menu.add(refs["traffic"])
+            refs["traffic_total"] = rumps.MenuItem("__traffic_total__", callback=None)
+            app.menu.add(refs["traffic_total"])
             added = True
 
         # Connecting log lines（进行中在做什么，瞬态反馈）
@@ -860,15 +873,31 @@ class MenuBuilder:
         if vpn_row is not None and vpn_kind is not None:
             _apply_status_dot(vpn_row, vpn_kind, point_size=10)
 
-        # Traffic line —— 方向箭头由行首图标承载（SSH 已连接才有此行）
-        if "traffic" in self.refs:
-            snap = st.stats_snapshot
-            traffic_text = (
-                f"{_human(snap['rate_down'], 'B/s')}"
-                f"  ·  {_human(snap['rate_up'], 'B/s')}"
-                f"  ·  {i18n.t('status.traffic.connections', n=snap['active_connections'])}"
-            )
+        traffic = _access_traffic(st)
+        if "traffic" in self.refs and traffic is not None:
+            source, snap = traffic
+            traffic_text = i18n.t(
+                "status.traffic.rates", source=source,
+                down=_human(snap.get("rate_down", 0), "B/s"),
+                up=_human(snap.get("rate_up", 0), "B/s"))
+            if source == "SSH":
+                traffic_text += "  ·  " + i18n.t(
+                    "status.traffic.connections", n=snap.get("active_connections", 0))
+                total_text = i18n.t(
+                    "status.traffic.total_app",
+                    down=_human(snap.get("total_down", 0)),
+                    up=_human(snap.get("total_up", 0)))
+                scope = i18n.t("status.traffic.scope_ssh")
+            else:
+                total_text = i18n.t(
+                    "status.traffic.total_vpn",
+                    down=_human(snap.get("total_down", 0)),
+                    up=_human(snap.get("total_up", 0)))
+                scope = i18n.t("status.traffic.scope_vpn")
             self._set_title("traffic", traffic_text)
+            self._set_title("traffic_total", total_text)
+            for ref_key in ("traffic", "traffic_total"):
+                self.refs[ref_key]._menuitem.setToolTip_(scope)
 
         # B 类设置：原生 ✓ 随磁盘真相收敛（标题中性名词不变）
         _apply_check(self.refs.get("sys_proxy_check"), st.sys_proxy_on)

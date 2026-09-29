@@ -174,14 +174,21 @@ class TestProjections(unittest.TestCase):
         self.assertEqual(
             (mv.status, mv.server_name, mv.error_kind, mv.tun_ip),
             ("idle", "s1", "", ""))
+        self.assertIsNone(mv.stats_snapshot)
         vpn._client = MagicMock()
         vpn._client.vpn.status = "connected"
         vpn._client.vpn.error_kind = "tls_error"
         vpn._client.vpn.tun_ip = "10.8.0.2"
+        vpn._client.traffic_snapshot.return_value = {
+            "rate_in": 1024, "rate_out": 512,
+            "bytes_in": 8192, "bytes_out": 4096}
         mv = vpn.menu_vpn()
         self.assertEqual(
             (mv.status, mv.server_name, mv.error_kind, mv.tun_ip),
             ("connected", "s1", "tls_error", "10.8.0.2"))
+        self.assertEqual(mv.stats_snapshot, {
+            "rate_down": 1024, "rate_up": 512,
+            "total_down": 8192, "total_up": 4096})
 
     def test_projection_enriches_semantics(self):
         """projection：快照 + active/in_flight 布尔 + error_key（JS 侧

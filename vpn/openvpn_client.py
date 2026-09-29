@@ -150,7 +150,8 @@ class VpnClient(SubprocessMonitor):
         self._auth_failures = 0
         self._log_error_kind = ""
         self._fatal_text = ""
-        self._samples = deque(maxlen=12)         # (monotonic, in_total, out_total)
+        self._traffic_lock = threading.Lock()
+        self._samples = deque(maxlen=4)          # 最近三个采样间隔，默认约 3 秒
         self._last_in = None
         self._last_out = None
         self._base_in = 0
@@ -354,6 +355,9 @@ class VpnClient(SubprocessMonitor):
                 self.vpn.status = "exiting"
         elif self.vpn.status == "idle":
             self.vpn.status = "connecting"
+        if self.vpn.status != "connected":
+            with self._traffic_lock:
+                self._samples.clear()
         self._notify_change()
 
     def _on_log(self, parsed):
@@ -370,14 +374,19 @@ class VpnClient(SubprocessMonitor):
     def _on_bytecount(self, pair):
         now = time.monotonic()
         new_in, new_out = pair
-        if self._last_in is not None and (new_in < self._last_in
-                                          or new_out < self._last_out):
-            # 计数器随重连归零——折叠进基数，跨重连总量单调（Tunnelblick 实践）
-            self._base_in += self._last_in
-            self._base_out += self._last_out
-        self._last_in, self._last_out = new_in, new_out
-        self._samples.append((now, self._base_in + new_in,
-                              self._base_out + new_out))
+        with self._traffic_lock:
+            if self._last_in is not None and (new_in < self._last_in
+                                              or new_out < self._last_out):
+                # 重连归零：累计保留，速率窗口重新采样，避免沿用旧连接速率。
+                self._base_in += self._last_in
+                self._base_out += self._last_out
+                self._samples.clear()
+            if (self._samples
+                    and now - self._samples[-1][0] > self._traffic_stale_after()):
+                self._samples.clear()
+            self._last_in, self._last_out = new_in, new_out
+            self._samples.append((now, self._base_in + new_in,
+                                  self._base_out + new_out))
 
     def _on_password_need(self, parsed):
         if parsed.get("challenge"):
@@ -467,20 +476,25 @@ class VpnClient(SubprocessMonitor):
 
     # ── 投影 ─────────────────────────────────────────────────────
 
+    def _traffic_stale_after(self):
+        return max(3.0, self._bytecount_interval * 3.0)
+
     def traffic_snapshot(self) -> dict:
-        """累计字节 + 窗口速率（samples 滑动平均，Tunnelblick 实践）。"""
-        if not self._samples:
-            return {"bytes_in": self._base_in, "bytes_out": self._base_out,
-                    "rate_in": 0, "rate_out": 0}
-        first_t, first_in, first_out = self._samples[0]
-        last_t, last_in, last_out = self._samples[-1]
-        dt = last_t - first_t
-        if dt <= 0:
-            rate_in = rate_out = 0
-        else:
-            rate_in = int((last_in - first_in) / dt)
-            rate_out = int((last_out - first_out) / dt)
-        return {"bytes_in": last_in, "bytes_out": last_out,
+        """线程安全的累计字节与窗口速率；断开或采样过期时速率归零。"""
+        with self._traffic_lock:
+            total_in = self._base_in + (self._last_in or 0)
+            total_out = self._base_out + (self._last_out or 0)
+            samples = tuple(self._samples)
+        rate_in = rate_out = 0
+        if len(samples) >= 2 and self.vpn.status == "connected":
+            first_t, first_in, first_out = samples[0]
+            last_t, last_in, last_out = samples[-1]
+            dt = last_t - first_t
+            age = time.monotonic() - last_t
+            if dt > 0 and age <= self._traffic_stale_after():
+                rate_in = int((last_in - first_in) / dt)
+                rate_out = int((last_out - first_out) / dt)
+        return {"bytes_in": total_in, "bytes_out": total_out,
                 "rate_in": rate_in, "rate_out": rate_out}
 
     def snapshot(self) -> dict:
