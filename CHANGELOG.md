@@ -3,6 +3,11 @@
 All notable changes to Magic-AI-Router are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+- **删除「经代理启动」功能**（菜单/回调/`capture/chromium_proxy.py` 整模块/双语键/测试）：SSH 模式经 :8888 注入的代理环境变量无法从已启动进程回收，SSH→VPN 切换后（接入层互斥，8888 关闭）旧终端与经其拉起的守护进程全部撞死无人监听的端口（真机案例：codex app-server 守护携带 `https_proxy=:8888` 持续 `Connection refused`）。系统代理开关（networksetup）不受影响——它由应用事务式管理，无环境变量残留。
+
 ## [v0.14.0] — 2026-09-25 — 产品国际化（中英双语）+ NFS 挂载回归修复
 
 **产品国际化落地（ADR-012，M0–M2）**——菜单栏与设置窗全量中英双语，一处切换即时生效。自研语义键 catalog（`shared/locales/{zh-CN,en}.json` 单一真相，非 gettext）+ `shared/i18n` 叶子模块；语言偏好 auto/zh-CN/en（auto 经 AppleLanguages 跟随系统），存 mp 配置顶层 `language`，缺省中文。

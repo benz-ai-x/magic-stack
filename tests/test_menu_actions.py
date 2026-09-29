@@ -284,8 +284,7 @@ class TestVpnAccessSwitch(unittest.TestCase):
 class TestOnTickIdle(unittest.TestCase):
     """P0 回归（#118 接线事故，v0.15.0）：_on_tick 三元 else 分支曾引用
     未定义的 s——空闲态（SSH 未连+无转发+无挂载）每拍 NameError，rumps
-    吞异常无感，其后 sync_sleep / _tick_relaunch 整段停摆（防睡眠开着
-    永不释放、relaunch 状态机卡死）。"""
+    吞异常无感，其后 sync_sleep 整段停摆（防睡眠开着永不释放）。"""
 
     def _idle_app(self, ssh_status="error"):
         a = _make_app()
@@ -296,7 +295,6 @@ class TestOnTickIdle(unittest.TestCase):
         a._conn.paused = False
         a._mounts.any_mounted.return_value = False
         a._mounts.any_session_connected.return_value = False
-        a._relaunch_waiter = None
         return a
 
     def test_idle_tick_no_name_error_and_syncs_sleep(self):
@@ -568,30 +566,7 @@ class TestMiscActions(unittest.TestCase):
         self.assertIn("0.4.3.08102116", alert.call_args[1]["message"])
 
 
-class TestLaunchAppProxied(unittest.TestCase):
-    def test_missing_app_path_alerts(self):
-        a = _make_app()
-        with patch.object(app.chromium_proxy, "app_path", return_value=None), \
-             patch.object(app.rumps, "alert") as alert:
-            a._launch_app_proxied({"name": "Chrome"})
-        alert.assert_called_once()
-
-    def test_launch_success_alerts(self):
-        a = _make_app()
-        with patch.object(app.chromium_proxy, "is_running", return_value=False), \
-             patch.object(app.chromium_proxy, "launch", return_value=(True, "")), \
-             patch.object(app.rumps, "alert") as alert:
-            a._launch_app_proxied({"name": "Chrome", "path": "/App/Chrome.app"})
-        alert.assert_called_once()
-
-    def test_launch_failure_alerts(self):
-        a = _make_app()
-        with patch.object(app.chromium_proxy, "is_running", return_value=False), \
-             patch.object(app.chromium_proxy, "launch", return_value=(False, "err")), \
-             patch.object(app.rumps, "alert") as alert:
-            a._launch_app_proxied({"name": "Chrome", "path": "/App/Chrome.app"})
-        self.assertIn("启动失败", alert.call_args[1]["message"])
-
+class TestToggleCaptureCaGuide(unittest.TestCase):
     def test_toggle_capture_untrusted_guide_trusted_enables(self):
         a = _make_app()
         a._capture_ctrl.enabled = False
@@ -655,43 +630,6 @@ class TestOSErrorPaths(unittest.TestCase):
         a = _make_app()
         with patch.object(app, "show_log_window", side_effect=RuntimeError("boom")):
             a.show_log_window(None)
-
-
-class TestLaunchProxiedRunningApp(unittest.TestCase):
-    def test_make_launch_proxied_returns_callback(self):
-        a = _make_app()
-        with patch.object(a, "_launch_app_proxied") as launch:
-            cb = a.make_launch_proxied({"name": "X"})
-            cb(None)
-        launch.assert_called_once_with({"name": "X"})
-
-    def test_running_app_user_confirms_relaunch(self):
-        a = _make_app()
-        with patch.object(app.chromium_proxy, "is_running", return_value=True), \
-             patch.object(app.rumps, "alert", return_value=1), \
-             patch.object(app.chromium_proxy, "quit_app") as quit_app, \
-             patch.object(app.chromium_proxy, "wait_until_stopped", return_value=True), \
-             patch.object(app.chromium_proxy, "launch", return_value=(True, "")):
-            a._launch_app_proxied({"name": "Chrome", "path": "/App/Chrome.app"})
-        quit_app.assert_called_once()
-
-    def test_running_app_user_cancels(self):
-        a = _make_app()
-        with patch.object(app.chromium_proxy, "is_running", return_value=True), \
-             patch.object(app.rumps, "alert", return_value=0), \
-             patch.object(app.chromium_proxy, "launch") as launch:
-            a._launch_app_proxied({"name": "Chrome", "path": "/App/Chrome.app"})
-        launch.assert_not_called()
-
-    def test_running_app_quit_times_out(self):
-        a = _make_app()
-        with patch.object(app.chromium_proxy, "is_running", return_value=True), \
-             patch.object(app.rumps, "alert", return_value=1), \
-             patch.object(app.chromium_proxy, "quit_app"), \
-             patch.object(app.chromium_proxy, "wait_until_stopped", return_value=False), \
-             patch.object(app.chromium_proxy, "launch") as launch:
-            a._launch_app_proxied({"name": "Chrome", "path": "/App/Chrome.app"})
-        launch.assert_not_called()
 
 
 class TestBridgeActions(unittest.TestCase):

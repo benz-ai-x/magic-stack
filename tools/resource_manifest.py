@@ -34,7 +34,7 @@ RUNTIME_MODULES = [
     "shellui/log_window.py", "shellui/bridge_protocol.py",
     "capture/capture.py", "capture/capture_controller.py",
     "capture/capture_store.py", "capture/ca_trust.py",
-    "capture/chromium_proxy.py", "capture/resources.py",
+    "capture/resources.py",
     "capture/mitmdump_entry.py",
     "sysctl/system_proxy.py", "sysctl/sys_proxy_controller.py",
     "sysctl/sleep_blocker.py", "sysctl/login_item.py", "sysctl/port_check.py",

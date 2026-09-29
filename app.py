@@ -13,10 +13,8 @@ from Foundation import NSObject, NSNotificationCenter, NSRunLoop, NSRunLoopCommo
 import rumps
 
 from capture import ca_trust
-from capture import chromium_proxy
 from shared import i18n, keychain
 from sysctl import login_item
-from shared import netloc
 from shared.identity import IdentityMigrationError
 from sysctl import port_check
 from shellui.bridge_protocol import (ACTION_COPY_AGENT_INSTRUCTIONS,
@@ -186,9 +184,6 @@ class MagicProxyApp(rumps.App):
         # 降级——网络中断场景由 #85 的无限退避兜底。多活：NFS 会话同拍
         # 僵尸重建（唤醒断了所有隧道的 TCP）。
         self._reconnect_trigger = ReconnectTrigger(self._on_wake_event)
-
-        # Non-blocking quit→relaunch state machine for proxied app launches
-        self._relaunch_waiter = None
 
         # VPN 接入协调器（R7-C1）：连接序列/互斥切换后置/established
         # 重建/错误码表/客户端生命周期/菜单投影单一归宿在 vpn 域——
@@ -544,33 +539,6 @@ class MagicProxyApp(rumps.App):
         self._lifecycle.sync_sleep(sleep_status, sleep_paused,
                              self._config.get("prevent_sleep", False))
 
-        # Pending proxied-app relaunch (quit → wait → launch)
-        self._tick_relaunch()
-
-    def _tick_relaunch(self):
-        """Advance the quit→relaunch state machine (never blocks the menu)."""
-        w = self._relaunch_waiter
-        if w is None:
-            return
-        action, payload = w.step()
-        if action is None:
-            return
-        self._relaunch_waiter = None
-        if action == "timeout":
-            rumps.alert(title="Magic Stack",
-                        message=i18n.t("alert.relaunch.timeout", name=w.name))
-            return
-        ok, err = chromium_proxy.launch(w.path, payload)
-        if not ok:
-            rumps.alert(title="Magic Stack",
-                        message=i18n.t("alert.launch.failed", err=err))
-            return
-        rumps.alert(
-            title="Magic Stack",
-            message=i18n.t("alert.launched_proxied", name=w.name,
-                           addr=payload),
-        )
-
     # ── menu callbacks ───────────────────────────────────
 
     def _dirty(self):
@@ -903,49 +871,6 @@ class MagicProxyApp(rumps.App):
         rumps.alert(
             title="Magic Stack",
             message=i18n.t("app.about.body", version=self.VERSION_DISPLAY))
-
-    # ── proxied app launch ───────────────────────────────
-
-    def make_launch_proxied(self, entry):
-        def cb(_):
-            self._launch_app_proxied(entry)
-        return cb
-
-    def _launch_app_proxied(self, entry):
-        """Launch a Chromium app with --proxy-server."""
-        name = entry["name"]
-        path = entry.get("path") or chromium_proxy.app_path(entry)
-        if not path:
-            rumps.alert(title="Magic Stack",
-                        message=i18n.t("alert.proxied.not_found",
-                                        name=name))
-            return
-        http_listen = netloc.format_listen("127.0.0.1", int(self._config["http_listen_port"]))
-        if chromium_proxy.is_running(path):
-            resp = rumps.alert(
-                title="Magic Stack",
-                message=i18n.t("alert.proxied.running", name=name),
-                ok=i18n.t("alert.proxied.quit_relaunch"),
-                cancel=i18n.t("common.cancel_action"),
-            )
-            if not resp:
-                return
-            chromium_proxy.quit_app(path)
-            # Waiting for the process to exit blocks the menu callback for up
-            # to 5 s — hand off to the tick loop (see _tick_relaunch).
-            self._relaunch_waiter = chromium_proxy.RelaunchWaiter(
-                path, name, http_listen)
-            return
-        ok, err = chromium_proxy.launch(path, http_listen)
-        if not ok:
-            rumps.alert(title="Magic Stack",
-                        message=i18n.t("alert.launch.failed", err=err))
-            return
-        rumps.alert(
-            title="Magic Stack",
-            message=i18n.t("alert.launched_proxied", name=name,
-                           addr=http_listen),
-        )
 
     # ── port check ───────────────────────────────────────
 

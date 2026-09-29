@@ -71,7 +71,6 @@ capture/ ── TLS MITM 抓包
   ai_capture_addon.py ── mitmproxy addon：AI 请求/响应抽取为 JSONL
   ca_trust.py ── 根 CA 信任检测与引导窗
   mitmdump_entry.py ── frozen mitmdump 构建入口
-  chromium_proxy.py ── Chromium 启动代理配置
 
 sysctl/ ── macOS 系统集成
   system_proxy.py ── networksetup 事务与崩溃恢复

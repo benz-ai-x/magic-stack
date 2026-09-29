@@ -11,7 +11,6 @@ from typing import Callable
 import logging
 
 import rumps
-from capture import chromium_proxy
 from shared.server_shape import (
     forward_enabled, is_proxy_server, proxy_server, proxy_server_id,
     server_forwards, servers, ssh_node,
@@ -383,10 +382,9 @@ class MenuBuilder:
     def build(self):
         """五段结构（2026-09-27 定稿，行即开关；ADR-011 修订）：状态
         （流量/异常——仅活跃时有行）→ 接入（SSH/VPN 行即开关）→ 功能
-        （系统代理/端口映射/远程挂载——服务层自治，恒可用；经代理启动
-        随 -D 接入态单独置灰）→ AI ▸ → 应用。连接状态不再三处重复：
-        接入行圆点即状态，菜单栏图标同语义（灰=无连接/蓝=SSH/绿=VPN/
-        黄=进行中）。"""
+        （系统代理/端口映射/远程挂载——服务层自治，恒可用）→ AI ▸ →
+        应用。连接状态不再三处重复：接入行圆点即状态，菜单栏图标同语
+        义（灰=无连接/蓝=SSH/绿=VPN/黄=进行中）。"""
         app = self._app
         app.menu.clear()
         self.refs = {}
@@ -486,10 +484,11 @@ class MenuBuilder:
     # ── 功能段：连上之后用什么（服务层自治，恒可用）──────────────
 
     def _build_features_section(self):
-        """功能段：系统代理（B 类 ✓）+ 端口映射/远程挂载组 + 经代理
-        启动。端口映射与挂载是服务层（ADR-011 修订）——永不随 VPN
-        置灰，各行圆点自证健康；经代理启动依赖 -D 接入（:8888 上游），
-        接入未连接时单独置灰（接入态在 struct_key 内，态变重建换灰）。"""
+        """功能段：系统代理（B 类 ✓）+ 端口映射/远程挂载组。端口映射与
+        挂载是服务层（ADR-011 修订）——永不随 VPN 置灰，各行圆点自证
+        健康。（经代理启动已于 2026-09-29 移除：SSH 时代注入的 8888
+        代理环境变量无法从已启动进程回收，切 VPN 后旧终端全部撞死
+        无人监听的 8888。）"""
         st = self._get_state()
         a = self._app
         rows = []
@@ -503,24 +502,8 @@ class MenuBuilder:
         rows.append(self._build_forward_submenu())
         rows.append(self._build_mount_submenu())
 
-        # 经代理启动（装了 Chromium 系应用才出现；依赖 -D 接入）
-        apps_list = chromium_proxy.installed_apps()
-        if apps_list:
-            sub = rumps.MenuItem(i18n.t("proxy.launch_apps"), callback=None)
-            _apply_icon(sub, "launch")
-            for entry in apps_list:
-                item = rumps.MenuItem(
-                    entry["name"], callback=a.make_launch_proxied(entry))
-                _apply_icon(item, "launch")
-                sub.add(item)
-            rows.append(sub)
-            self.refs["launch_apps_menu"] = sub
-
         for item in rows:
             self._app.menu.add(item)
-        if "launch_apps_menu" in self.refs:
-            _set_enabled(self.refs["launch_apps_menu"],
-                         st.ssh_status == "connected")
 
     # ── AI 合并组（重设计 ④）：路由 + 抓包 ──────────────────
 

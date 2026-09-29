@@ -1,4 +1,4 @@
-"""Batch coverage: system_proxy, chromium_proxy, suanpan/router edges, conn_coordinator, suanpan_runtime."""
+"""Batch coverage: system_proxy, suanpan/router edges, conn_coordinator, suanpan_runtime."""
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -11,16 +11,6 @@ class TestSystemProxy(unittest.TestCase):
             stdout="Ethernet\nWi-Fi\n")
         services = system_proxy._active_services()
         self.assertIn("Wi-Fi", services)
-
-
-# ── chromium_proxy.py ────────────────────────────────────
-from capture import chromium_proxy
-class TestChromiumProxy(unittest.TestCase):
-    @patch("capture.chromium_proxy.subprocess.run")
-    def test_quit_app_calls_killall(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
-        chromium_proxy.quit_app("/path/to/Test.app")
-        mock_run.assert_called()
 
 
 # ── suanpan/router.py edge cases ─────────────────────────

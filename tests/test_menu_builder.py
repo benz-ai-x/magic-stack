@@ -118,10 +118,8 @@ class TestStateGrammar(unittest.TestCase):
 
     def _build(self, st):
         app = MagicMock()
-        with unittest.mock.patch("shellui.menu_builder.chromium_proxy.installed_apps",
-                                 return_value=[]):
-            mb = MenuBuilder(app, lambda: st)
-            mb.build()
+        mb = MenuBuilder(app, lambda: st)
+        mb.build()
         return mb
 
     def test_router_toggle_title_follows_running(self):
@@ -283,42 +281,33 @@ class TestMultiActiveTunnels(unittest.TestCase):
         """直接构建子菜单（真实 rumps.MenuItem 树——MockApp 的 menu 不会
         真建树）；返回 (parent, [子行 MenuItem])。"""
         app = MagicMock()
-        with unittest.mock.patch("shellui.menu_builder.chromium_proxy.installed_apps",
-                                 return_value=[{"name": "ChatGPT"}]):
-            mb = MenuBuilder(app, lambda: _state(
-                ssh_status=ssh_status, config=cfg or self._cfg(),
-                forward_states=forward_states))
-            builder = {"端口映射": mb._build_forward_submenu,
-                       "AI": mb._build_ai_submenu}[title]
-            parent = builder()
+        mb = MenuBuilder(app, lambda: _state(
+            ssh_status=ssh_status, config=cfg or self._cfg(),
+            forward_states=forward_states))
+        builder = {"端口映射": mb._build_forward_submenu,
+                   "AI": mb._build_ai_submenu}[title]
+        parent = builder()
         self._mb = mb
         rows = list(parent.values())
         self._titles = [r.title for r in rows if hasattr(r, "title")]
         return parent, [r for r in rows if hasattr(r, "values")]
 
     def test_features_section_structure(self):
-        """功能段（定稿）：系统代理（B 类 ✓）+ 端口映射/远程挂载组 +
-        经代理启动；会话动作（连接/停止/重连/服务器）已归接入段——
-        不再在此出现。"""
+        """功能段（定稿）：系统代理（B 类 ✓）+ 端口映射/远程挂载组；
+        会话动作（连接/停止/重连/服务器）已归接入段——不再在此出现。
+        （经代理启动已移除，2026-09-29。）"""
         app = MagicMock()
         added = []
         app.menu.add.side_effect = lambda i: added.append(i)
-        with unittest.mock.patch(
-                "shellui.menu_builder.chromium_proxy.installed_apps",
-                return_value=[{"name": "ChatGPT"}]):
-            mb = MenuBuilder(app, lambda: _state(
-                ssh_status="connected", config=self._cfg()))
-            mb._build_features_section()
+        mb = MenuBuilder(app, lambda: _state(
+            ssh_status="connected", config=self._cfg()))
+        mb._build_features_section()
         titles = [i.title for i in added if hasattr(i, "title")]
         self.assertIn("系统代理", titles)           # B 类中性名词 + ✓
         self.assertIn("端口映射", titles)
         self.assertIn("远程挂载", titles)
         self.assertNotIn("停止代理", titles)        # 会话动作在接入行
         self.assertNotIn("连接代理", titles)
-        launches = [r for r in added if hasattr(r, "values")]
-        self.assertTrue(any(
-            "ChatGPT" in [x.title for x in list(l.values())
-                          if hasattr(x, "title")] for l in launches))
         self.assertEqual(mb.refs["sys_proxy_check"]._menuitem.state(), 0)
 
     def test_forward_submenu_structure(self):
@@ -392,11 +381,9 @@ class TestMultiActiveTunnels(unittest.TestCase):
                  {"local_port": 7001, "remote_host": "h",
                   "remote_port": 71}]}}}]}
         app = MagicMock()
-        with unittest.mock.patch("shellui.menu_builder.chromium_proxy.installed_apps",
-                                 return_value=[]):
-            mb = MenuBuilder(app, lambda: _state(
-                ssh_status="connected", config=cfg))
-            parent = mb._build_forward_submenu()
+        mb = MenuBuilder(app, lambda: _state(
+            ssh_status="connected", config=cfg))
+        parent = mb._build_forward_submenu()
         titles = [r.title for r in parent.values() if hasattr(r, "title")]
         # 拍平依旧：转发行与动作行都在顶层（一级）；代理服务器不再有
         # 特判上下文行。无独立会话（forward_states 空）→ 如实未连接 +
@@ -560,11 +547,9 @@ class TestMountSubmenu(unittest.TestCase):
 
     def _submenu(self, mount_states=(), cfg=None):
         app = MagicMock()
-        with unittest.mock.patch("shellui.menu_builder.chromium_proxy.installed_apps",
-                                 return_value=[]):
-            mb = MenuBuilder(app, lambda: _state(
-                config=cfg or {"servers": []}, mount_states=mount_states))
-            parent = mb._build_mount_submenu()
+        mb = MenuBuilder(app, lambda: _state(
+            config=cfg or {"servers": []}, mount_states=mount_states))
+        parent = mb._build_mount_submenu()
         rows = [r for r in parent.values() if hasattr(r, "values")]
         titles = [r.title for r in parent.values() if hasattr(r, "title")]
         return parent, rows, titles
