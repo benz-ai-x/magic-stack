@@ -3,7 +3,7 @@
 All notable changes to Magic-AI-Router are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [v0.16.1] — 2026-09-29 — VPN IPv6 泄漏修复 + 移除「经代理启动」
 
 ### Removed
 - **删除「经代理启动」功能**（菜单/回调/`capture/chromium_proxy.py` 整模块/双语键/测试）：SSH 模式经 :8888 注入的代理环境变量无法从已启动进程回收，SSH→VPN 切换后（接入层互斥，8888 关闭）旧终端与经其拉起的守护进程全部撞死无人监听的端口（真机案例：codex app-server 守护携带 `https_proxy=:8888` 持续 `Connection refused`）。系统代理开关（networksetup）不受影响——它由应用事务式管理，无环境变量残留。
