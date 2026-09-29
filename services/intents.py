@@ -19,6 +19,7 @@ action）此前是同一批用户意图的两套手写 adapter，线程纪律各
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import threading
 
@@ -273,9 +274,30 @@ class UserIntents:
     def copy_agent_instructions(self):
         """复制 AI 助手指令上剪贴板。ADR-009：指令里的 curl 要能被
         agent 立即使用——复制即闩锁持有配置服务（本次会话保持监听）。"""
-        self._hold_copy_latch()
-        text = self._get_agent_instructions()
-        proc = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
-        proc.communicate(text.encode())
-        self._notify(i18n.t("notify.copy_instructions.title"),
-                     i18n.t("notify.copy_instructions.body"))
+        result = {"ok": False, "error": i18n.t("ui.agent.native_copy_failed")}
+        try:
+            if self._hold_copy_latch() is False:
+                result["error"] = i18n.t("ui.agent.api_unavailable")
+            else:
+                text = self._get_agent_instructions()
+                # Finder 启动的 .app 没有 locale；pbcopy 按 C 编码处理中文
+                # 会写空剪贴板，且仍返回 0。显式覆盖 LC_ALL，不能只查退出码。
+                subprocess.run(
+                    ["/usr/bin/pbcopy"], input=text.encode("utf-8"),
+                    env={**os.environ, "LC_ALL": "en_US.UTF-8"},
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    check=True, timeout=5,
+                )
+                result = {"ok": True}
+        except Exception as exc:
+            # 指令含 token，不记录子进程输入或异常载荷。
+            logger.warning("Copy agent instructions failed (%s)", type(exc).__name__)
+        try:
+            if result["ok"]:
+                self._notify(i18n.t("notify.copy_instructions.title"),
+                             i18n.t("notify.copy_instructions.body"))
+            else:
+                self._notify(i18n.t("notify.copy_instructions.failed"), result["error"])
+        except Exception:
+            logger.warning("Copy instructions notification unavailable")
+        return result

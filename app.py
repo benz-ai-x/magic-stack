@@ -1068,7 +1068,7 @@ class MagicProxyApp(rumps.App):
     def copy_agent_instructions(self, _):
         """菜单栏页脚「复制 AI 助手指令」（v0.9.1）——免开设置窗直通。
         意图体在 UserIntents（ADR-009 闩锁 + pbcopy + 通知）。"""
-        self._intents.copy_agent_instructions()
+        return self._intents.copy_agent_instructions()
 
     def _bridge_action(self, action):
         """App-level bridge actions from the settings window.
@@ -1103,7 +1103,7 @@ class MagicProxyApp(rumps.App):
         elif kind == ACTION_OPEN_PATH and action.get("kind") == "captureDir":
             self.open_capture_dir(None)
         elif kind == ACTION_COPY_AGENT_INSTRUCTIONS:
-            self.copy_agent_instructions(None)
+            return self.copy_agent_instructions(None)
 
     def _shutdown(self):
         """退出清理唯一归宿（幂等）。

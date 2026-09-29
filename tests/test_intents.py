@@ -5,6 +5,8 @@ Thread）/ 通知文案 / 状态推导翻转。app.py 侧的 adapter 翻译（�
 与 _bridge_action）在 test_menu_actions 经 _make_app 的同步执行器组合
 覆盖。
 """
+import os
+import subprocess
 import threading
 import unittest
 from types import SimpleNamespace
@@ -276,13 +278,58 @@ class TestCopyAgentInstructions(unittest.TestCase):
             hold_copy_latch=lambda: calls.append("latch"),
             get_agent_instructions=lambda: (calls.append("text"), "curl ...")[1],
         )
-        with patch.object(intents_mod.subprocess, "Popen") as popen:
-            ui.copy_agent_instructions()
+        with patch.object(intents_mod.subprocess, "run") as run:
+            result = ui.copy_agent_instructions()
         # 先闩锁再取文本——次序钉死（curl 要立即可用，文本依赖服务在听）
         self.assertEqual(calls, ["latch", "text"])
-        popen.assert_called_once()
+        run.assert_called_once()
+        self.assertEqual(result, {"ok": True})
         self.assertEqual(notes, [("已复制 AI 助手指令",
                                   "含 token 的 curl 已就绪；配置 API 已开启供助手访问")])
+
+    def test_chinese_instructions_force_utf8_even_with_inherited_c_locale(self):
+        text = "我在用 Magic Stack，请帮我配置。"
+        ui, _, _, _, _ = _intents(
+            hold_copy_latch=lambda: True, get_agent_instructions=lambda: text)
+        with patch.dict(os.environ, {"LC_ALL": "C"}), \
+                patch.object(intents_mod.subprocess, "run") as run:
+            result = ui.copy_agent_instructions()
+        self.assertTrue(result["ok"])
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ["/usr/bin/pbcopy"])
+        self.assertEqual(kwargs["input"], text.encode("utf-8"))
+        self.assertEqual(kwargs["env"]["LC_ALL"], "en_US.UTF-8")
+        self.assertTrue(kwargs["check"])
+        self.assertGreater(kwargs["timeout"], 0)
+
+    def test_copy_failure_returns_error_without_success_notification(self):
+        for error in (OSError("unavailable"),
+                      subprocess.CalledProcessError(1, ["/usr/bin/pbcopy"]),
+                      subprocess.TimeoutExpired(["/usr/bin/pbcopy"], 5)):
+            with self.subTest(error=type(error).__name__):
+                ui, _, _, notes, _ = _intents(
+                    hold_copy_latch=lambda: True,
+                    get_agent_instructions=lambda: "private instructions")
+                with patch.object(intents_mod.subprocess, "run", side_effect=error):
+                    result = ui.copy_agent_instructions()
+                self.assertFalse(result["ok"])
+                self.assertTrue(result["error"])
+                self.assertNotIn("private instructions", result["error"])
+                self.assertNotEqual(notes[0][0], "已复制 AI 助手指令")
+
+    def test_unavailable_config_api_does_not_copy_unusable_instructions(self):
+        ui, _, _, _, _ = _intents(hold_copy_latch=lambda: False)
+        with patch.object(intents_mod.subprocess, "run") as run:
+            result = ui.copy_agent_instructions()
+        run.assert_not_called()
+        self.assertFalse(result["ok"])
+
+    def test_notification_failure_does_not_hide_successful_copy(self):
+        ui, _, _, _, _ = _intents(
+            hold_copy_latch=lambda: True, get_agent_instructions=lambda: "text",
+            notify=MagicMock(side_effect=RuntimeError("notifications unavailable")))
+        with patch.object(intents_mod.subprocess, "run"):
+            self.assertEqual(ui.copy_agent_instructions(), {"ok": True})
 
 
 class TestToggleForwardRow(unittest.TestCase):

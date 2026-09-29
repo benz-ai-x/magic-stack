@@ -14,6 +14,6 @@
 
 该导航由 `tests/test_docs_drift.py` 与设置窗 VIEWS 注册表核对，增删页面时同步更新。
 
-同一页面支持浏览器直接访问（token 登录）。原生 bridge 不可用时，重连/转发启停给 toast 提示；「复制 AI 助手指令」回退到经认证的 `GET /api/agent-instructions`。协议归 `shellui/bridge_protocol.py`，`webview_window.py` 保持 ObjC 薄 adapter。
+同一页面支持浏览器直接访问（token 登录）。原生 bridge 不可用时，重连/转发启停给 toast 提示；「复制 AI 助手指令」回退到经认证的 `GET /api/agent-instructions`。原生复制经 `agentInstructionsCopied` 回传成功/失败并显示 toast，指令正文与 token 不经回传进入 JS。协议归 `shellui/bridge_protocol.py`，`webview_window.py` 保持 ObjC 薄 adapter。
 
 配置服务启停或浏览器兼容变更前读 [ADR-009](../adr/009-config-ui-web-and-port-lifecycle.md)；保存与 dirty 变更前读 [CONTEXT.md](../../CONTEXT.md)「设置窗桥接」「保存流」「服务生命周期」。配置服务启停经生命周期编排。

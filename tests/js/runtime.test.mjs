@@ -114,6 +114,21 @@ function makeRuntime(fetchImpl) {
   };
 }
 
+test("native instruction copy waits for a result and renders success or failure", () => {
+  const rt = makeRuntime();
+  rt.run(`
+    window.sent=[];
+    window.webkit={messageHandlers:{bridge:{postMessage:m=>window.sent.push(m)}}};
+    copyAgentInstructions();
+  `);
+  assert.equal(rt.run("window.sent[0].type"), "copyAgentInstructions");
+  assert.equal(rt.elements.get("toast-msg").textContent, "");
+  rt.run("window.__native.receive({type:'agentInstructionsCopied',payload:{ok:true}})");
+  assert.equal(rt.elements.get("toast-msg").textContent, "已复制 AI 助手指令");
+  rt.run("window.__native.receive({type:'agentInstructionsCopied',payload:{ok:false,error:'test failure'}})");
+  assert.equal(rt.elements.get("toast-msg").textContent, "复制失败：test failure");
+});
+
 test("saveAll keeps edits made while the PUT is pending dirty", async () => {
   let release, submitted;
   const response = new Promise(resolve => { release = resolve; });

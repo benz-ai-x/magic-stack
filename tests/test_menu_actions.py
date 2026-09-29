@@ -971,7 +971,7 @@ class TestConfigHoldersAtomicity(unittest.TestCase):
         a = _make_app()
         a._config_server = MagicMock()
         a._config_server.agent_instructions.return_value = "curl ..."
-        with patch.object(app.subprocess, "Popen"), \
+        with patch.object(app.subprocess, "run"), \
              patch.object(a, "_notify"):
             a.copy_agent_instructions(None)
         self.assertTrue(a._copy_api_latch)

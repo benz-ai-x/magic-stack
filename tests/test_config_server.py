@@ -1,6 +1,8 @@
 """Tests for config_server.py — HTTP config API, auth, masking, balance/usage."""
 import json
 import os
+from pathlib import Path
+import shlex
 import tempfile
 import unittest
 from http.client import HTTPConnection
@@ -1258,6 +1260,12 @@ class TestAgentInstructionsApi(unittest.TestCase):
         self.assertIn(f"Bearer {self.token}", text)
         self.assertIn("agent.md", text)
 
+    def test_guide_link_serves_the_bundled_document_without_credentials(self):
+        status, body = _request(self.port, "GET", "/agent.md")
+        self.assertEqual(status, 200)
+        guide = Path(__file__).resolve().parents[1] / "docs" / "agent.md"
+        self.assertEqual(body, guide.read_text(encoding="utf-8"))
+
     def test_missing_fn_degrades_to_explicit_error(self):
         # 直接构造 server 漏传 instructions_fn：明确 500 JSON，
         # 不在 handler 线程裸抛
@@ -1279,6 +1287,25 @@ class TestAgentInstructionsPortLifecycleHint(unittest.TestCase):
     def test_docker_form_has_no_menu_hint(self):
         s = config_server.ConfigServer(bind_host="0.0.0.0", token="t")
         self.assertNotIn("配置 API 服务", s.agent_instructions())
+
+    def test_bootstrap_commands_use_actual_port_and_quote_token_for_both_languages(self):
+        token = "fixture'$(literal-not-a-command)"
+        server = config_server.ConfigServer(port=19528, token=token)
+        for language in ("zh-CN", "en"):
+            with self.subTest(language=language), \
+                    patch.object(config_server.i18n, "_current", language):
+                text = server.agent_instructions()
+            commands = [shlex.split(line.strip()) for line in text.splitlines()
+                        if line.strip().startswith("curl ")]
+            self.assertEqual(len(commands), 2)
+            self.assertEqual(commands[0][-1], "http://127.0.0.1:19528/agent.md")
+            self.assertEqual(commands[1][-1], "http://127.0.0.1:19528/api/state")
+            self.assertEqual(commands[1][commands[1].index("-H") + 1],
+                             "Authorization: Bearer " + token)
+            self.assertNotIn("{lifecycle}", text)
+            if language == "en":
+                self.assertIn("complete mp or sp section", text)
+                self.assertIn("Preferences", text)
 
 
 class TestProbeProviderEndpoint(unittest.TestCase):

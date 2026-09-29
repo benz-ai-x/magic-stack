@@ -2209,6 +2209,11 @@ function fillKeyPath(field,path){
 window.__native={receive:function(msg){
   if(!msg||typeof msg!=='object')return;
   if(msg.type==='keyFilePicked')fillKeyPath(msg.payload&&msg.payload.field,msg.payload&&msg.payload.path);
+  if(msg.type==='agentInstructionsCopied'){
+    const result=msg.payload||{};
+    if(result.ok===true)toast(tt('ui.agent.copied'));
+    else toast(tt('ui.agent.copy_fail',{msg:result.error||tt('ui.agent.native_copy_failed')}),true);
+  }
 }};
 
 // ── system view ───────────────────────────────────────
@@ -2767,7 +2772,7 @@ function ccRenderDefault(){
 function copyAgentInstructions(){
   // #70 S13：token 拼装移原生侧（#10 后 URL 永不带凭证，此处曾恒空
   // 导致复制的 curl 401）。WKWebView 走 bridge：app 持 expected_token
-  // 把完整文本上剪贴板，toast 由原生通知承担。浏览器直开设置页无桥接，
+  // 把完整文本上剪贴板，回传结果后显示 toast。浏览器直开设置页无桥接，
   // 曾是静默空操作（对齐 reconnectProxy 的降级约定）——回退经认证
   // /api/agent-instructions 取同一文案自行写剪贴板。
   if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.bridge){

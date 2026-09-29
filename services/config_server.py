@@ -2,8 +2,9 @@
 
 Serves a single-page HTML config panel + JSON API for reading/writing both
 Magic Stack (~/.magic-proxy.json) and Suanpan (~/.suanpan.yaml) configs.
-Uses stdlib http.server — no FastAPI/uvicorn dependency. Runs on 127.0.0.1:9528
-in a daemon thread, always available while the app is running.
+Uses stdlib http.server — no FastAPI/uvicorn dependency. On macOS, listens on
+loopback in a daemon thread while held by the settings window, copy action,
+or persistent API preference. Docker runs it continuously.
 
 Security: validates Host header (DNS-rebinding guard), masks API keys in GET
 responses (restores on write), validates Suanpan config before persisting.
@@ -11,6 +12,7 @@ responses (restores on write), validates Suanpan config before persisting.
 import json
 import logging
 import secrets
+import shlex
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -895,17 +897,16 @@ class ConfigServer:
         """
         # ADR-009：macOS 形态配置 API 默认不常驻（复制手势自动开启）；
         # Docker 形态恒常驻，无需该提示
-        hint = (
-            "\n（复制本指令时配置 API 已自动开启；若稍后连接失败，请让用户"
-            "在菜单 选 项 ▸ 打开「配置 API 服务」）"
-            if self._bind_host == "127.0.0.1" else "")
-        return (
-            "我在用 Magic Stack（macOS 菜单栏应用）。\n"
-            f"请先读 {self.url}agent.md 了解产品功能和配置方法。\n"
-            "当前配置 API（需要 token）：\n"
-            f'  curl -H "Authorization: Bearer {self.token}" {self.url}api/state\n'
-            "你可以通过这个 API 读取和修改我的配置，帮我完成设置。"
-            + hint)
+        hint = (i18n.t("agent.instructions.desktop_hint")
+                if self._bind_host == "127.0.0.1"
+                else i18n.t("agent.instructions.docker_hint"))
+        return i18n.t(
+            "agent.instructions.body",
+            docs_url=shlex.quote(self.url + "agent.md"),
+            state_url=shlex.quote(self.url + "api/state"),
+            auth_header=shlex.quote("Authorization: Bearer " + self.token),
+            lifecycle=hint,
+        )
 
     def _forward_seams(self):
         """VPN 动作 seam（R8 P0-1 修复）：app 在包装对象上挂 vpn_*_fn，

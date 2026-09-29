@@ -11,6 +11,7 @@ tense as a tombstone; these checks therefore target the specific phrases
 that PRESENT them as current.
 """
 from pathlib import Path
+import json
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,38 @@ ADR_025 = ROOT / "docs" / "adr" / "004-prompt-caching-and-prefix-stability.md"
 
 # `__init__.py` is a package marker, not a module — never listed in docs.
 _SKIP = frozenset({"__init__.py"})
+
+
+class TestAgentGuideContract:
+    def test_api_inventory_matches_registered_routes(self):
+        from services import config_server
+        text = (ROOT / "docs" / "agent.md").read_text(encoding="utf-8")
+        documented = set(re.findall(r"^\| (GET|POST|PUT) \| `(/api/[^`?]+)(?:\?[^`]*)?` \|", text, re.M))
+        registered = {(method, path)
+                      for method, routes in (("GET", config_server._API_GET),
+                                             ("POST", config_server._API_POST),
+                                             ("PUT", config_server._API_PUT))
+                      for path in routes}
+        assert documented == registered, ("Agent API guide drift", registered - documented,
+                                          documented - registered)
+
+    def test_documented_server_example_survives_current_config_normalization(self):
+        from mpconf.config import SCHEMA_VERSION, merge_config
+        from mpconf.config_state import ConfigStateStore
+        text = (ROOT / "docs" / "agent.md").read_text(encoding="utf-8")
+        example = json.loads(re.search(r"```json\n(.*?)\n```", text, re.S).group(1))
+        assert example["schema_version"] == SCHEMA_VERSION
+        normalized = merge_config(example)
+        assert normalized["servers"] == example["servers"]
+        plan = ConfigStateStore(keychain=None).prepare(mp=example)
+        assert plan.ok, plan.errors
+
+    def test_documented_ai_example_passes_current_config_validation(self):
+        from mpconf.config_state import ConfigStateStore
+        text = (ROOT / "docs" / "agent.md").read_text(encoding="utf-8")
+        examples = re.findall(r"```json\n(.*?)\n```", text, re.S)
+        plan = ConfigStateStore(keychain=None).prepare(sp=json.loads(examples[1]))
+        assert plan.ok, plan.errors
 
 
 class TestAdr000NoStaleClaims:

@@ -31,7 +31,8 @@ from AppKit import (
 from Foundation import NSObject, NSBundle, NSURL, NSURLRequest
 
 from shellui.bridge_protocol import (
-    ACTION_SHOW_OPEN_PANEL, ACTION_VPN_OPEN_PANEL, BridgeCore)
+    ACTION_COPY_AGENT_INSTRUCTIONS, ACTION_SHOW_OPEN_PANEL,
+    ACTION_VPN_OPEN_PANEL, BridgeCore)
 
 logger = logging.getLogger("magic-proxy.webview")
 
@@ -114,10 +115,23 @@ class _ConfigWindowDelegate(NSObject):
             elif action.get("type") == ACTION_VPN_OPEN_PANEL:
                 self.vpnProfilePanel()
             elif self._on_action:
+                result = None
                 try:
-                    self._on_action(action)
+                    result = self._on_action(action)
                 except Exception:
                     logger.exception("bridge action handler failed")
+                if action.get("type") == ACTION_COPY_AGENT_INSTRUCTIONS and _webview:
+                    from shared import i18n
+                    # 只回传结果；含 token 的指令文本始终留在原生侧。
+                    payload = {"ok": isinstance(result, dict) and result.get("ok") is True}
+                    if not payload["ok"]:
+                        payload["error"] = (result.get("error") if isinstance(result, dict)
+                                            else None) or i18n.t("ui.agent.native_copy_failed")
+                    try:
+                        _webview.evaluateJavaScript_completionHandler_(
+                            BridgeCore.build_message_js("agentInstructionsCopied", payload), None)
+                    except Exception:
+                        logger.exception("copy instructions result delivery failed")
 
     def vpnProfilePanel(self):
         """VPN .ovpn 选择（M2）：NSOpenPanel 选文件 → 原生读内容 → 经

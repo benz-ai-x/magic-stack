@@ -23,7 +23,9 @@ Protocol v1 (single "bridge" script-message channel, {type, payload} JSON):
              — NFS 挂载启停（ADR-007；会话/挂载编排归 MountCoordinator，
                JS 无运行时状态）
            {type:"openPath",       payload:{kind: "captureDir"}}
+           {type:"copyAgentInstructions", payload:{}}
   PY → JS  {type:"keyFilePicked", payload:{field, path}}
+           {type:"agentInstructionsCopied", payload:{ok, error?}}
            delivered via window.__native.receive(<json>)
 
 Design rules that keep the historical crash classes from recurring:
@@ -173,6 +175,12 @@ class BridgeCore:
     @staticmethod
     def build_fill_js(field, path):
         """Build JS delivering a picked path to the JS-owned receiver."""
-        msg = {"type": "keyFilePicked", "payload": {"field": field, "path": path}}
+        return BridgeCore.build_message_js(
+            "keyFilePicked", {"field": field, "path": path})
+
+    @staticmethod
+    def build_message_js(message_type, payload):
+        """Deliver structured results through the one JS-owned receiver."""
+        msg = {"type": message_type, "payload": payload}
         return "window.__native&&window.__native.receive(%s)" % json.dumps(
             msg, ensure_ascii=False)
